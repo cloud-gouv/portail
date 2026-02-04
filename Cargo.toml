@@ -1,0 +1,25 @@
+[package]
+name = "portail"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.100"
+bytes = "1.11.0"
+chrono = "0.4.43"
+fast-socks5 = "1.0.0"
+hyper = { version = "1.8.1", features = ["full"] }
+nix = { version = "0.31.1", features = ["socket", "uio", "net"] }
+peekable = { version = "0.4.1", features = ["tokio"] }
+regex = "1.12.2"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+serde_with = { version = "3.16.1", features = ["chrono"] }
+thiserror = "2.0.18"
+tokio = { version = "1.49.0", features = ["full"] }
+tokio-rustls = "0.26.4"
+toml = "0.9.11"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+varlink = { version = "13.0.0", features = ["tokio"] }
+winnow = "0.7.14"

@@ -1,0 +1,24 @@
+filter-acl-rules-path = "./filter.acl"
+request-timeout = 5
+tcp_nodelay = false
+
+[backends.par01a]
+target-address = "127.0.0.2:8000"
+identity-aware = true
+
+[backends.par01b]
+target-address = "127.0.0.2:8001"
+
+[backends.par02a]
+target-address = "127.0.0.2:8002"
+identity-aware = true
+
+[listener]
+cacert-file = "./cacert.pem"
+tls-privkey = "./server.key"
+tls-chain = "./fullchain.pem"
+
+[escaper]
+cacert-file = "./cacert.pem"
+tls-privkey = "./client.key"
+tls-certificate = "./client.pem"

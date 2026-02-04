@@ -1,0 +1,40 @@
+# Basic device trust + user group
+git.par01.corp.example.com device.trust_level=low user.group=eng -> backends=par01a,par01b,default allow
+git.par02.corp.example.com device.trust_level=low user.group=eng -> backends=par02a,par02b,default allow
+
+# RBAC with device trust
+git.corp.example.com user.role=admin user.group=eng device.trust_level=high -> allow
+git.corp.example.com user.role=developer user.group=eng device.trust_level=low -> allow
+
+# Behavior-driven access (time/PTO/etc.)
+accounting.corp.example.com user.group=finances device.trust_level=high time.of_access=working_hours -> allow
+accounting.corp.example.com user.group=finances device.trust_level=high time.of_access=off_hours -> deny
+
+# Conditional MFA
+sensitive.corp.example.com device.trust_level=low -> backends=par01 allow
+sensitive.corp.example.com device.trust_level=high -> backends=par01 allow
+
+# List of backends
+* device.trust_level=high -> backends=par01,par02,par03,default allow
+
+# Granular read/write access
+git.corp.example.com user.group=eng device.trust_level=low request.access_type=read -> backends=par01 allow
+sensitive.corp.example.com user.role=admin request.access_type=write -> backends=par01 allow
+
+# User group and device type
+user.group=eng device.type=desktop -> allow
+user.group=finances device.type=mobile -> allow
+
+# Access backed on security patch level
+* device.security_patch_age<1d -> allow
+* device.security_patch_age<1wk -> log=slow_patching
+* device.security_patch_age<2wk -> deny
+
+# Restrict access by device OS
+user.group=eng device.os=linux -> allow
+user.group=eng device.os!=linux -> allow
+
+# Geolocation-based access control
+git.corp.example.com user.location=France device.trust_level=low request.access_type=read -> allow
+git.corp.example.com user.location!=France device.trust_level=high request.access_type=read -> allow
+git.corp.example.com user.location!=France -> deny
