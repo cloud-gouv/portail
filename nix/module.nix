@@ -6,8 +6,21 @@ let
 
   toml = pkgs.formats.toml { };
 
-  aclRulesFilePath = pkgs.writeText "portail-acl" (concatStringsSep "\n" cfg.acl.filter.rules);
   configFile = toml.generate "portail-config.toml" cfg.settings;
+  aclRulesFilePath =
+  let
+    # We cannot use `configFile` because it depends on `aclRulesFilePath`.
+    partialConfigFile = toml.generate "portail-config.toml" (removeAttrs cfg.settings [ "filter-acl-rules-path" ]);
+  in
+  pkgs.writeTextFile {
+    name = "portail-acl";
+    text = concatStringsSep "\n" cfg.acl.filter.rules;
+    checkPhase = ''
+      echo checking ACL syntax...
+      ${cfg.package}/bin/portail check-acl-syntax --config ${partialConfigFile} "$target"
+      echo checked.
+    '';
+  };
 in
 {
   options = {

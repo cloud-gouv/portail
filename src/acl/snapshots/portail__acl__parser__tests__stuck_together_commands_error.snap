@@ -1,0 +1,13 @@
+---
+source: src/acl/parser.rs
+expression: result.unwrap_err()
+---
+error: Failure to parse the ACL rules
+  |
+1 |
+2 |             policy broken_policy {
+3 |                 actionallow
+  |                 ^ invalid policy block
+4 |             }
+5 |         
+  |

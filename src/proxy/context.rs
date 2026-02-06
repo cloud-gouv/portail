@@ -18,16 +18,16 @@ pub struct TargetContext {
 }
 
 #[derive(Clone)]
-pub struct RequestContext {
+pub struct RequestContext<'s> {
     pub client_address: SocketAddr,
-    pub acl_eval_ctx: crate::acl::EvalContext,
+    pub acl_ctx: crate::acl::EvaluationContext<'s>,
 }
 
-impl RequestContext {
+impl<'s> RequestContext<'s> {
     pub fn new(client_address: SocketAddr) -> Self {
         Self {
             client_address,
-            acl_eval_ctx: crate::acl::EvalContext::new(),
+            acl_ctx: crate::acl::EvaluationContext::empty(),
         }
     }
 }

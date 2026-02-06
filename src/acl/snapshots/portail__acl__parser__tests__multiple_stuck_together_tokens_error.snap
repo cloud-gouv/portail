@@ -1,0 +1,14 @@
+---
+source: src/acl/parser.rs
+expression: result.unwrap_err()
+---
+error: Failure to parse the ACL rules
+  |
+1 |
+2 |             policy broken_policy {
+3 |                 requireuser.authenticated==true
+  |                 ^ invalid policy block
+4 |                 actiondeny
+5 |             }
+6 |         
+  |

@@ -1,0 +1,11 @@
+---
+source: src/acl/parser.rs
+expression: result.unwrap_err()
+---
+error: Failure to parse the ACL rules
+  |
+1 |
+2 |             route main {
+3 |                 use ["exit1"]
+4 |         
+  |         ^ invalid route definition
