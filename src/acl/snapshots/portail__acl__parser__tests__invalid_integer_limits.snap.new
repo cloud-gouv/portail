@@ -1,0 +1,19 @@
+---
+source: src/acl/parser.rs
+assertion_line: 980
+expression: result.unwrap_err()
+---
+error: Failure to parse the ACL rules
+   |
+ 1 |
+ 2 |             policy int {
+ 3 |                 when {
+ 4 |                     e >= 9223372036854775808
+   |                          ^ invalid right number operand
+ 5 |                     and g <= -9223372036854775808
+ 6 |                 }
+ 7 |
+ 8 |                 action allow
+ 9 |             }
+10 |         
+   |

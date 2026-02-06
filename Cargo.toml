@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+annotate-snippets = "0.12.11"
 anyhow = "1.0.100"
 bytes = "1.11.0"
 chrono = "0.4.43"
@@ -30,3 +31,16 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 winnow = "0.7.14"
 zlink = { version = "0.4.0", features = ["introspection"] }
+
+[dev-dependencies]
+criterion = { version = "0.8.2", features = ["html_reports"] }
+insta = "1.46.3"
+rand = "0.10.0"
+
+[[bench]]
+name = "acl"
+harness = false
+
+[profile.dev.package]
+insta.opt-level = 3
+similar.opt-level = 3

@@ -1,0 +1,50 @@
+{
+  "scopeName": "source.acl",
+  "name": "ACL",
+  "fileTypes": ["acl"],
+  "patterns": [
+    {
+      "name": "comment.line.double-slash.acl",
+      "match": "//.*$"
+    },
+    {
+      "name": "comment.line.number-sign.acl",
+      "match": "#.*$"
+    },
+    {
+      "name": "keyword.control.acl",
+      "match": "\\b(backend|route|policy|when|require|action|allow|deny|redirect)\\b"
+    },
+    {
+      "name": "keyword.operator.comparator.acl",
+      "match": "(==|!=|=~|<=|>=|<|>|\\bin\\b|\\bnot\\s+in\\b)"
+    },
+    {
+      "name": "constant.language.boolean.acl",
+      "match": "\\b(true|false)\\b"
+    },
+    {
+      "name": "variable.other.acl",
+      "match": "\\b[A-Za-z_][A-Za-z0-9_-]*\\b"
+    },
+    {
+      "name": "string.quoted.double.acl",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.acl",
+          "match": "\\\\."
+        }
+      ]
+    },
+    {
+      "name": "constant.numeric.acl",
+      "match": "\\b\\d+\\b"
+    },
+    {
+      "name": "keyword.action.acl",
+      "match": "\\b(allow|deny|redirect)\\b"
+    }
+  ]
+}

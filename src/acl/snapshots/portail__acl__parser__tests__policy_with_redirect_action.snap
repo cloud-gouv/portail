@@ -1,0 +1,44 @@
+---
+source: src/acl/parser.rs
+expression: rules
+---
+ACLAst {
+    entries: [
+        Policy(
+            PolicyBlock {
+                name: "allow_web_after_auth",
+                attributes: [
+                    Require(
+                        And(
+                            Comparison(
+                                Identifier(
+                                    "role",
+                                ),
+                                Eq,
+                                String(
+                                    "admin",
+                                ),
+                            ),
+                            Not(
+                                Comparison(
+                                    Identifier(
+                                        "banned",
+                                    ),
+                                    Eq,
+                                    Boolean(
+                                        true,
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                    Action(
+                        Redirect(
+                            https://sso.example.com/login,
+                        ),
+                    ),
+                ],
+            },
+        ),
+    ],
+}

@@ -1,0 +1,10 @@
+---
+source: src/acl/parser.rs
+assertion_line: 563
+expression: result.unwrap_err()
+---
+error: Failure to parse the ACL rules
+  |
+1 | /
+2 | |             route main
+  | |_^

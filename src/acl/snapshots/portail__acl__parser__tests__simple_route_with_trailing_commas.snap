@@ -1,0 +1,32 @@
+---
+source: src/acl/parser.rs
+expression: rules
+---
+ACLAst {
+    entries: [
+        Route(
+            RouteDefinition {
+                name: "main",
+                attributes: [
+                    Use(
+                        [
+                            "exit1",
+                            "exit2",
+                        ],
+                    ),
+                    When(
+                        Comparison(
+                            Identifier(
+                                "src_ip",
+                            ),
+                            Eq,
+                            String(
+                                "1.2.3.4",
+                            ),
+                        ),
+                    ),
+                ],
+            },
+        ),
+    ],
+}

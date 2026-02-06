@@ -1,0 +1,17 @@
+---
+source: src/acl/parser.rs
+expression: result.unwrap_err()
+---
+error: Failure to parse the ACL rules
+  |
+1 |
+2 |             policy over {
+3 |                 when {
+4 |                     e >= 9223372036854775808
+  |                          ^ invalid right number operand
+5 |                 }
+6 |
+7 |                 action allow
+8 |             }
+9 |         
+  |

@@ -1,0 +1,27 @@
+{
+  "name": "vscode-acl-syntax",
+  "displayName": "Portail ACL Syntax",
+  "description": "Portail ACL language syntax highlighting",
+  "version": "0.1.0",
+  "publisher": "cloud-gouv",
+  "engines": {
+    "vscode": "^1.70.0"
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "acl",
+        "aliases": ["ACL"],
+        "extensions": [".acl"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "acl",
+        "scopeName": "source.acl",
+        "path": "./syntaxes/acl.tmLanguage.json"
+      }
+    ]
+  }
+}

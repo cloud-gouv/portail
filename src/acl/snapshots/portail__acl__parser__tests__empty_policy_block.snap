@@ -1,0 +1,14 @@
+---
+source: src/acl/parser.rs
+expression: result.unwrap()
+---
+ACLAst {
+    entries: [
+        Policy(
+            PolicyBlock {
+                name: "main",
+                attributes: [],
+            },
+        ),
+    ],
+}

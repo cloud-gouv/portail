@@ -1,0 +1,29 @@
+---
+source: src/acl/hir.rs
+expression: result
+---
+Ok(
+    ACLHir {
+        routes: [],
+        policies: [
+            PolicyDefinition {
+                name: "policy1",
+                when: Some(
+                    Group(
+                        Comparison(
+                            Boolean(
+                                true,
+                            ),
+                            Eq,
+                            Boolean(
+                                true,
+                            ),
+                        ),
+                    ),
+                ),
+                require: None,
+                action: Allow,
+            },
+        ],
+    },
+)

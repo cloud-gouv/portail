@@ -4,15 +4,15 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use tokio_rustls::{
-    TlsAcceptor, TlsStream,
     rustls::{
-        ServerConfig,
         server::{VerifierBuilderError, WebPkiClientVerifier},
+        ServerConfig,
     },
+    TlsAcceptor, TlsStream,
 };
 use tracing::error;
 
-use crate::{config::Settings, proxy::context::RequestContext, state::State};
+use crate::{config::Settings, proxy::context::InitialRequestContext, state::State};
 
 mod client_tls;
 mod context;
@@ -22,7 +22,7 @@ mod socks5;
 
 use context::InboundStream;
 use http_connect::{serve_http1_connect, serve_http2_connect};
-use protocol_detect::{DetectedProtocol, detect_protocol, detect_tls, ALPN_H2, ALPN_HTTP1_1};
+use protocol_detect::{detect_protocol, detect_tls, DetectedProtocol, ALPN_H2, ALPN_HTTP1_1};
 use socks5::serve_socks5;
 
 #[derive(Debug, Error)]
@@ -36,7 +36,7 @@ enum ProxyError {
 async fn serve_authenticated_proxy(
     settings: Arc<Settings>,
     state: Arc<RwLock<State>>,
-    ctx: RequestContext,
+    ctx: InitialRequestContext,
     stream: TlsStream<tokio::net::TcpStream>,
 ) -> anyhow::Result<()> {
     // TODO: extract context
@@ -58,7 +58,7 @@ async fn serve_authenticated_proxy(
 async fn serve_unauthenticated_proxy(
     settings: Arc<Settings>,
     state: Arc<RwLock<State>>,
-    ctx: RequestContext,
+    ctx: InitialRequestContext,
     stream: tokio::net::TcpStream,
 ) -> anyhow::Result<()> {
     let (proto, stream) = detect_protocol(InboundStream::TcpStream(stream)).await?;
@@ -127,7 +127,7 @@ pub async fn start(
         let acceptor = tls_acceptor.clone();
         let settings = settings.clone();
         let state = state.clone();
-        let ctx = RequestContext::new(addr);
+        let ctx = InitialRequestContext::new(addr);
 
         tokio::spawn(async move {
             match detect_tls(&socket).await {

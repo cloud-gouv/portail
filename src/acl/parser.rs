@@ -1,268 +1,1002 @@
-use std::path::Path;
-use winnow::{
-    ModalResult, Parser, ascii::{Caseless, alphanumeric1, multispace0, multispace1, till_line_ending}, combinator::{alt, opt, preceded, repeat, separated}, error::StrContext, stream::AsChar, token::{take_till, take_while}
+use std::collections::HashSet;
+use std::path::PathBuf;
+
+use regex::Regex;
+use winnow::ascii::{digit1, multispace1};
+use winnow::combinator::{alt, cut_err, dispatch, fail, opt, preceded, repeat, separated};
+use winnow::error::{
+    ContextError, ErrMode, FromExternalError, ParseError, StrContext, StrContextValue,
 };
-use tracing::info;
+use winnow::token::take;
+use winnow::ModalResult;
+use winnow::{
+    ascii::multispace0, combinator::delimited, error::ParserError, token::take_while, Parser,
+    Result,
+};
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Action {
-    Allow,
-    Deny,
-    Redirect(fast_socks5::util::target_addr::TargetAddr), // Redirect to a new hostname
-    Log(String), // Log action with the log message
+use crate::acl::ast::{
+    ACLAst, ACLEntry, Action, Comparator, Expression, Operand, PolicyAttribute, PolicyBlock,
+    RouteAttribute, RouteDefinition,
+};
+
+fn ws<'a, O, F: Parser<&'a str, O, E>, E: ParserError<&'a str>>(
+    inner: F,
+) -> impl Parser<&'a str, O, E> {
+    delimited(multispace0, inner, multispace0)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Operator {
-    Equals,
-    NotEquals,
-    LessThan,
-    GreaterThan,
-    LessThanOrEqual,
-    GreaterThanOrEqual,
+fn identifier<'s>(input: &mut &'s str) -> ModalResult<&'s str> {
+    take_while(1.., |c: char| c.is_alphanumeric() || c == '_' || c == '-')
+        .context(StrContext::Label("identifier"))
+        .context(StrContext::Expected(StrContextValue::Description(
+            "alphanumeric with _ or -",
+        )))
+        .parse_next(input)
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Condition {
-    pub key: String,
-    pub value: String,
-    pub operator: Operator,
+fn string_literal<'s>(input: &mut &'s str) -> ModalResult<&'s str> {
+    // FIXME: use `take_escaped` or `escaped` here.
+    delimited("\"", take_while(0.., |c| c != '"'), "\"")
+        .context(StrContext::Label("string literal"))
+        .parse_next(input)
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Hostname {
-    Exact(String),
-    Regex(String),
+fn number(input: &mut &str) -> ModalResult<i64> {
+    let negative = opt('-').parse_next(input)?.is_some();
+
+    digit1
+        .context(StrContext::Label("number"))
+        .parse_to()
+        .verify_map(|v: i64| if negative { v.checked_neg() } else { Some(v) })
+        .parse_next(input)
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ACLRule {
-    pub hostname: Hostname,
-    pub conditions: Vec<Condition>,
-    pub backends: Option<Vec<String>>,
-    pub action: Action,
-}
-
-fn parse_regex_hostname(input: &mut &str) -> ModalResult<Hostname> {
-    take_till(1.., AsChar::is_space)
-    .map(|regex: &str| Hostname::Regex(regex.to_string()))
+fn boolean(input: &mut &str) -> ModalResult<bool> {
+    alt((
+        "true",
+        "false",
+        fail.context(StrContext::Label("boolean"))
+            .context(StrContext::Expected(StrContextValue::StringLiteral("true")))
+            .context(StrContext::Expected(StrContextValue::StringLiteral(
+                "false",
+            ))),
+    ))
+    .parse_to()
     .parse_next(input)
 }
 
-fn parse_plain_hostname(input: &mut &str) -> ModalResult<Hostname> {
-    take_till(1.., AsChar::is_space).map(|hostname: &str| Hostname::Exact(hostname.to_string())).parse_next(input)
+fn dotted_identifier<'s>(input: &mut &'s str) -> ModalResult<Vec<String>> {
+    (identifier, repeat(1.., preceded(".", identifier)))
+        .map(|(first, rest): (_, Vec<_>)| {
+            let mut path = Vec::with_capacity(1 + rest.len());
+            path.push(first.to_owned());
+            path.append(&mut rest.into_iter().map(|s| s.to_owned()).collect());
+            path
+        })
+        .context(StrContext::Label("identifiers separated by dots"))
+        .parse_next(input)
 }
 
-fn parse_hostname(input: &mut &str) -> ModalResult<Hostname> {
-    alt((parse_regex_hostname.context(StrContext::Label("a hostname regex")), parse_plain_hostname)).parse_next(input)
-}
-
-fn parse_operator(input: &mut &str) -> ModalResult<Operator> {
+fn comparator(input: &mut &str) -> ModalResult<Comparator> {
     alt((
-        '='.map(|_| Operator::Equals),
-        "!=".map(|_| Operator::NotEquals),
-        "<=".map(|_| Operator::LessThanOrEqual),
-        ">=".map(|_| Operator::GreaterThanOrEqual),
-        "<".map(|_| Operator::LessThan),
-        ">".map(|_| Operator::GreaterThan),
-    )).parse_next(input)
+        "==".value(Comparator::Eq),
+        "!=".value(Comparator::Ne),
+        "=~".value(Comparator::Regex),
+        "<=".value(Comparator::Lte),
+        ">=".value(Comparator::Gte),
+        "<".value(Comparator::Lt),
+        ">".value(Comparator::Gt),
+        "in".value(Comparator::In),
+        fail.context(StrContext::Label("comparator")),
+    ))
+    .parse_next(input)
 }
 
-fn parse_key<'a>(input: &mut &'a str) -> ModalResult<&'a str> {
-    take_while(
-        1..,
-        |c: char| c.is_alphanumeric() || c == '.' || c == '_'
-    ).parse_next(input)
+fn operand<'s>(input: &mut &'s str) -> ModalResult<Operand> {
+    alt((
+        boolean.map(Operand::Boolean),
+        number.map(Operand::Number),
+        string_literal.map(|s| Operand::String(s.to_owned())),
+        dotted_identifier.map(Operand::DottedIdentifier),
+        identifier.map(|s| Operand::Identifier(s.to_owned())),
+        fail.context(StrContext::Label("operand")),
+    ))
+    .parse_next(input)
 }
 
-fn parse_condition_with_operator(input: &mut &str) -> ModalResult<Condition> {
-    (parse_key.context(StrContext::Label("condition identifier")), parse_operator.context(StrContext::Label("condition operator")), take_till(1.., AsChar::is_space).context(StrContext::Label("condition value")))
-        .map(|(key, operator, value): (&str, Operator, &str)| Condition {
-            key: key.to_string(),
-            value: value.to_string(),
-            operator,
+fn parse_set_string(input: &mut &str) -> ModalResult<HashSet<String>> {
+    delimited(
+        "[",
+        separated(0.., ws(string_literal), ","),
+        (opt(ws(",")), "]"),
+    )
+    .map(|items: Vec<_>| items.into_iter().map(|s| s.to_owned()).collect())
+    .context(StrContext::Label("set of string literals"))
+    .parse_next(input)
+}
+
+fn parse_regex<'s>(input: &mut &'s str) -> ModalResult<Regex> {
+    let raw_regex = string_literal.parse_next(input)?;
+
+    match Regex::new(raw_regex) {
+        Ok(re) => Ok(re),
+        Err(err) => {
+            return Err(ErrMode::Cut(ContextError::from_external_error(input, err)));
+        }
+    }
+}
+
+fn comparison(input: &mut &str) -> ModalResult<Expression> {
+    let lhs = operand
+        .context(StrContext::Label("left operand"))
+        .parse_next(input)?;
+    let comparator = ws(comparator).parse_next(input)?;
+    let rhs = match comparator {
+        Comparator::In => cut_err(parse_set_string)
+            .map(Operand::Set)
+            .context(StrContext::Label("right set of string operand"))
+            .parse_next(input)?,
+        Comparator::Regex => cut_err(parse_regex)
+            .map(Operand::Regex)
+            .context(StrContext::Label("right regex operand"))
+            .parse_next(input)?,
+        Comparator::Lt | Comparator::Gt | Comparator::Lte | Comparator::Gte => cut_err(number)
+            .map(Operand::Number)
+            .context(StrContext::Label("right number operand"))
+            .parse_next(input)?,
+        _ => cut_err(operand).parse_next(input)?,
+    };
+
+    Ok(Expression::Comparison(lhs, comparator, rhs))
+}
+
+fn atom_expression(input: &mut &str) -> ModalResult<Expression> {
+    alt((
+        ws(comparison),
+        delimited(ws("("), cut_err(expression), ws(")")).map(|e| Expression::Group(Box::new(e))),
+        fail.context(StrContext::Label("atomic expression")),
+    ))
+    .context(StrContext::Label("atomic expression"))
+    .parse_next(input)
+}
+
+fn not_expression(input: &mut &str) -> ModalResult<Expression> {
+    (opt("not"), atom_expression)
+        .map(|(not_, expr)| {
+            if not_.is_some() {
+                Expression::Not(Box::new(expr))
+            } else {
+                expr
+            }
+        })
+        .context(StrContext::Label("not expression"))
+        .parse_next(input)
+}
+
+fn and_expression(input: &mut &str) -> ModalResult<Expression> {
+    (
+        not_expression,
+        repeat(0.., preceded(ws("and"), not_expression)),
+    )
+        .map(|(first, rest): (_, Vec<_>)| {
+            rest.into_iter()
+                .fold(first, |acc, e| Expression::And(Box::new(acc), Box::new(e)))
+        })
+        .context(StrContext::Label("and expression"))
+        .parse_next(input)
+}
+
+fn or_expression(input: &mut &str) -> ModalResult<Expression> {
+    (
+        and_expression,
+        repeat(0.., preceded(ws("or"), and_expression)),
+    )
+        .map(|(first, rest): (_, Vec<_>)| {
+            rest.into_iter()
+                .fold(first, |acc, e| Expression::Or(Box::new(acc), Box::new(e)))
         })
         .parse_next(input)
 }
 
-fn parse_action(input: &mut &str) -> ModalResult<Action> {
+fn expression(input: &mut &str) -> ModalResult<Expression> {
+    or_expression(input)
+}
+
+fn policy_when_statement<'s>(input: &mut &'s str) -> ModalResult<PolicyAttribute> {
+    expression
+        .map(PolicyAttribute::When)
+        .context(StrContext::Label("policy when statement"))
+        .parse_next(input)
+}
+
+fn require_statement<'s>(input: &mut &'s str) -> ModalResult<PolicyAttribute> {
+    expression
+        .map(PolicyAttribute::Require)
+        .context(StrContext::Label("require statement"))
+        .parse_next(input)
+}
+
+fn action_statement(input: &mut &str) -> ModalResult<Action> {
+    // FIXME: move this to dispatch! ?
     alt((
-        Caseless("allow").map(|_| Action::Allow),
-        Caseless("deny").map(|_| Action::Deny),
-        preceded(Caseless("log="), till_line_ending)
-        .map(
-            |s: &str| Action::Log(s.to_string())
+        "allow".value(Action::Allow),
+        (
+            "deny",
+            opt(preceded(
+                preceded(multispace1, "explain-template="),
+                cut_err(string_literal.parse_to::<PathBuf>()),
+            )),
         )
-    )).parse_next(input)
-}
-
-fn parse_backends<'a>(input: &mut &'a str) -> ModalResult<Vec<&'a str>> {
-    preceded("backends=", separated(0.., alphanumeric1.context(StrContext::Label("backend")), ",")).parse_next(input)
-}
-
-fn parse_conditions(input: &mut &str) -> ModalResult<Vec<Condition>> {
-    separated(0.., parse_condition_with_operator.context(StrContext::Label("condition")), " ").parse_next(input)
-}
-
-fn parse_comment<'a>(input: &mut &'a str) -> ModalResult<&'a str> {
-    preceded('#', till_line_ending).parse_next(input)
-}
-
-
-fn parse_comments_or_empty(input: &mut &str) -> ModalResult<()> {
-    repeat(1..,
-        alt((
-            multispace1.context(StrContext::Label("empty line")).void(),
-            parse_comment.context(StrContext::Label("comment")).void(),
-        )).void()
-    )
+            .map(|(_, tpl)| Action::Deny(tpl)),
+        preceded(
+            "redirect",
+            cut_err(
+                preceded(multispace1, string_literal)
+                    .parse_to::<http::Uri>()
+                    .context(StrContext::Label("URI")),
+            ),
+        )
+        .map(|s| Action::Redirect(s.to_owned())),
+        fail.context(StrContext::Label("action statement"))
+            .context(StrContext::Expected(StrContextValue::Description(
+                "allow, deny [explain-template=] or redirect",
+            ))),
+    ))
+    .context(StrContext::Label("action statement"))
     .parse_next(input)
 }
 
-fn parse_acl_rule(input: &mut &str) -> ModalResult<ACLRule> {
-    // TODO: make use of permutation for the RHS of ->.
+fn braced_body<'s, T, P>(parser: P) -> impl Parser<&'s str, T, ErrMode<ContextError>>
+where
+    P: Parser<&'s str, T, ErrMode<ContextError>>,
+{
+    delimited("{", ws(parser), cut_err("}"))
+}
+
+fn action_attribute<'s>(input: &mut &'s str) -> ModalResult<PolicyAttribute> {
+    // FIXME: move all alt(braced_body(T), T) to dispatch! { take(1usize); "{" => braced_body(T), _
+    // => T } rather.
+    ws(alt((
+        braced_body(cut_err(action_statement)),
+        action_statement,
+        fail.context(StrContext::Label("action attribute")),
+    )))
+    .map(PolicyAttribute::Action)
+    .context(StrContext::Label("action attribute"))
+    .parse_next(input)
+}
+
+fn policy_when_attribute<'s>(input: &mut &'s str) -> ModalResult<PolicyAttribute> {
+    ws(alt((
+        braced_body(cut_err(policy_when_statement)),
+        policy_when_statement,
+        fail.context(StrContext::Label("policy when attribute")),
+    )))
+    .context(StrContext::Label("policy when attribute"))
+    .parse_next(input)
+}
+
+fn require_attribute<'s>(input: &mut &'s str) -> ModalResult<PolicyAttribute> {
+    ws(alt((
+        braced_body(cut_err(require_statement)),
+        require_statement,
+    )))
+    .context(StrContext::Label("require attribute"))
+    .parse_next(input)
+}
+
+fn policy_attribute<'s>(input: &mut &'s str) -> ModalResult<PolicyAttribute> {
+    dispatch! { take(1usize);
+        "w" => preceded("hen ", policy_when_attribute),
+        "r" => preceded("equire ", require_attribute),
+        "a" => preceded("ction ", action_attribute),
+        _ => fail
+    }
+    .context(StrContext::Label("policy attribute"))
+    .parse_next(input)
+}
+
+fn policy_block<'s>(input: &mut &'s str) -> ModalResult<ACLEntry<'s>> {
     (
-        opt(parse_comments_or_empty),
-        parse_hostname.context(StrContext::Label("hostname")),
-        multispace1,
-        parse_conditions.context(StrContext::Label("conditions")),
-        multispace1,
-        "->",
-        multispace1,
-        opt((parse_backends.context(StrContext::Label("backends")), multispace1)),
-        parse_action.context(StrContext::Label("action")),
-        till_line_ending,
-        multispace0,
+        "policy",
+        ws(identifier),
+        delimited("{", repeat(0.., ws(policy_attribute)), cut_err(ws("}"))),
     )
-    .map(|(_, hostname, _, conditions, _, _, _, backends, action, _, _)| ACLRule {
-        hostname,
-        conditions,
-        backends: backends.map(|(v, _)| v.into_iter().map(|s| s.to_owned()).collect()),
-        action,
-    })
+        .map(|(_, name, attributes): (_, _, Vec<_>)| {
+            ACLEntry::Policy(PolicyBlock { name, attributes })
+        })
+        .context(StrContext::Label("policy block"))
+        .parse_next(input)
+}
+
+fn use_attribute<'s>(input: &mut &'s str) -> ModalResult<RouteAttribute<'s>> {
+    ws((
+        "[",
+        separated(1.., ws(string_literal), ","),
+        opt(ws(",")),
+        "]",
+    ))
+    .map(|(_, targets, _, _): (_, Vec<_>, _, _)| RouteAttribute::Use(targets))
+    .context(StrContext::Label("use attribute"))
     .parse_next(input)
 }
 
-fn parse_acl_rules<'i>(input: &mut &'i str) -> ModalResult<Vec<ACLRule>> {
-    // TODO: this is very wrong, this doesn't support broken parses because repeat() will just
-    // ignore.
-    // we need to peek if after comments + empty + parsing hostname, then the parsing must succeed
-    // or this is a malformed ACL rule.
-    repeat(0..,
-        parse_acl_rule.context(StrContext::Label("ACL rule")),
-    )
+fn route_when_statement<'s>(input: &mut &'s str) -> ModalResult<RouteAttribute<'s>> {
+    expression
+        .map(RouteAttribute::When)
+        .context(StrContext::Label("route when statement"))
+        .parse_next(input)
+}
+
+fn route_when_attribute<'s>(input: &mut &'s str) -> ModalResult<RouteAttribute<'s>> {
+    ws(alt((
+        braced_body(cut_err(route_when_statement)),
+        route_when_statement,
+    )))
+    .context(StrContext::Label("route when attribute"))
     .parse_next(input)
 }
 
-pub fn load_rules_from_file(path: &Path) -> std::io::Result<Vec<ACLRule>> {
-    let contents = String::from_utf8_lossy(&std::fs::read(path)?).into_owned();
-    let rules = parse_acl_rules(&mut contents.as_str()).unwrap();
-    info!("Parsed {} ACL rules", rules.len());
-    Ok(rules)
+fn route_attribute<'s>(input: &mut &'s str) -> ModalResult<RouteAttribute<'s>> {
+    dispatch! { take(1usize);
+        "w" => preceded("hen ", route_when_attribute),
+        "u" => preceded("se ", use_attribute),
+        _ => fail,
+    }
+    .context(StrContext::Label("route attribute"))
+    .parse_next(input)
+}
+
+fn route_definition<'s>(input: &mut &'s str) -> ModalResult<ACLEntry<'s>> {
+    (
+        "route",
+        ws(identifier),
+        delimited(
+            cut_err(ws("{")),
+            repeat(0.., ws(route_attribute)),
+            cut_err(ws("}")),
+        ),
+    )
+        .map(|(_, name, attributes): (_, _, Vec<_>)| {
+            ACLEntry::Route(RouteDefinition { name, attributes })
+        })
+        .context(StrContext::Label("route definition"))
+        .parse_next(input)
+}
+
+#[derive(Debug)]
+pub struct ASTError {
+    message: String,
+    span: std::ops::Range<usize>,
+    input: String,
+}
+
+impl std::error::Error for ASTError {}
+
+impl ASTError {
+    fn from_parse(error: ParseError<&str, ContextError>) -> Self {
+        let message = error.inner().to_string();
+        let input = (*error.input()).to_owned();
+        let span = error.char_span();
+
+        Self {
+            message,
+            span,
+            input,
+        }
+    }
+}
+
+impl std::fmt::Display for ASTError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use annotate_snippets::*;
+
+        let message = Level::ERROR
+            .primary_title("Failure to parse the ACL rules")
+            .element(
+                Snippet::source(&self.input)
+                    .annotation(
+                        AnnotationKind::Primary
+                            .span(self.span.clone())
+                            .label(&self.message),
+                    )
+                    .fold(false),
+            );
+
+        let renderer = Renderer::plain();
+        let rendered = renderer.render(&[message]);
+
+        rendered.fmt(f)
+    }
+}
+
+pub fn parse_into_ast<'s>(input: &'s str) -> Result<ACLAst<'s>, ASTError> {
+    repeat(0.., ws(alt((route_definition, policy_block))))
+        .map(|entries| ACLAst { entries })
+        .context(StrContext::Label("ACL file"))
+        .parse(input)
+        .map_err(|e| ASTError::from_parse(e))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use insta::{assert_debug_snapshot, assert_snapshot};
+
+    // TODO: test ideas
+    // - add a lot of whitespace in plenty of areas and ensure it still parses as expected
+    // (whitespace insignificance)
+    // - add a bunch of semantically wrong rules and verifies it still parses an AST
+    // - try to stuck together commands and operands and verify it rejects it or not.
 
     #[test]
-    fn test_parse_acl_rule_with_comment_before_rule() {
-        let mut input = "# This is a comment\n\n \n # This is another comment\n git.corp.example.com device.trust_level=high -> allow";
-        let results = parse_acl_rules(&mut input);
+    fn parse_simple_route() {
+        let mut input = r#"
+            route main {
+                use ["exit1", "exit2"]
+                when src_ip == "1.2.3.4"
+            }
+        "#;
 
-        assert_eq!(results, Ok(vec![ACLRule {
-            hostname: Hostname::Regex("git.corp.example.com".to_string()),
-            conditions: vec![
-                Condition { key: "device.trust_level".to_string(), value: "high".to_string(), operator: Operator::Equals }
-            ],
-            backends: None,
-            action: Action::Allow,
-        }]));
+        let rules = parse_into_ast(&mut input).unwrap();
+
+        assert_debug_snapshot!("simple_route", rules);
     }
 
     #[test]
-    fn test_parse_acl_rule_with_exact_hostname() {
-        let mut input = "git.corp.example.com device.trust_level=high -> allow";
-        let result = parse_acl_rule(&mut input);
-        assert_eq!(result, Ok(ACLRule {
-            hostname: Hostname::Regex("git.corp.example.com".to_string()),
-            conditions: vec![
-                Condition { key: "device.trust_level".to_string(), value: "high".to_string(), operator: Operator::Equals }
-            ],
-            backends: None,
-            action: Action::Allow,
-        }));
+    fn parse_simple_route_with_trailing_commas() {
+        let mut input = r#"
+            route main {
+                use ["exit1", "exit2",]
+                when src_ip == "1.2.3.4"
+            }
+        "#;
+
+        let rules = parse_into_ast(&mut input).unwrap();
+
+        assert_debug_snapshot!("simple_route_with_trailing_commas", rules);
     }
 
     #[test]
-    fn test_parse_acl_rule_with_regex_hostname() {
-        let mut input = ".*\\.infra.corp.example.com device.trust_level=low -> allow";
-        let result = parse_acl_rule(&mut input);
-        assert_eq!(result, Ok(ACLRule {
-            hostname: Hostname::Regex(".*\\.infra.corp.example.com".to_string()),
-            conditions: vec![
-                Condition { key: "device.trust_level".to_string(), value: "low".to_string(), operator: Operator::Equals }
-            ],
-            backends: None,
-            action: Action::Allow,
-        }));
+    fn parse_policy_with_action() {
+        let mut input = r#"
+            policy allow_web {
+                require role == "admin" and not banned == true
+                action allow
+            }
+        "#;
+
+        let rules = parse_into_ast(&mut input).unwrap();
+        assert_debug_snapshot!("policy_with_action", rules);
     }
 
     #[test]
-    fn test_parse_acl_rule_with_regex_star_hostname() {
-        let mut input = ".* device.trust_level=low -> allow";
-        let result = parse_acl_rule(&mut input);
-        assert_eq!(result, Ok(ACLRule {
-            hostname: Hostname::Regex(".*".to_string()),
-            conditions: vec![
-                Condition { key: "device.trust_level".to_string(), value: "low".to_string(), operator: Operator::Equals }
-            ],
-            backends: None,
-            action: Action::Allow,
-        }));
+    fn parse_policy_with_redirect_action() {
+        let mut input = r#"
+            policy allow_web_after_auth {
+                require role == "admin" and not banned == true
+                action redirect                          "https://sso.example.com/login"
+            }
+        "#;
+
+        let rules = parse_into_ast(&mut input).unwrap();
+        assert_debug_snapshot!("policy_with_redirect_action", rules);
     }
 
     #[test]
-    fn test_parse_acl_rule_with_operator() {
-        let mut input = "git.corp.example.com device.security_patch_age<1d -> allow";
-        let result = parse_acl_rule(&mut input);
-        assert_eq!(result, Ok(ACLRule {
-            hostname: Hostname::Regex("git.corp.example.com".to_string()),
-            conditions: vec![
-                Condition { key: "device.security_patch_age".to_string(), value: "1d".to_string(), operator: Operator::LessThan }
-            ],
-            backends: None,
-            action: Action::Allow,
-        }));
+    fn parse_policy_with_dotted_identifiers() {
+        let mut input = r#"
+            policy allow_web {
+                require user.role == "admin"
+                action allow
+            }
+        "#;
+
+        let rules = parse_into_ast(&mut input).unwrap();
+        assert_debug_snapshot!("policy_with_dotted_identifiers", rules);
     }
 
     #[test]
-    fn test_parse_acl_rule_with_log_action() {
-        let mut input = "git.corp.example.com device.trust_level=low user.group=eng -> log=slow_patching";
-        let result = parse_acl_rule(&mut input);
-        assert_eq!(result, Ok(ACLRule {
-            hostname: Hostname::Regex("git.corp.example.com".to_string()),
-            conditions: vec![
-                Condition { key: "device.trust_level".to_string(), value: "low".to_string(), operator: Operator::Equals },
-                Condition { key: "user.group".to_string(), value: "eng".to_string(), operator: Operator::Equals }
-            ],
-            backends: None,
-            action: Action::Log("slow_patching".to_string()),
-        }));
+    fn parse_complex_acl() {
+        let mut input = r#"
+            route main {
+                when host =~ ".*.corp.example.com"
+                use ["exit1"]
+            }
+
+            policy corp {
+                when host =~ ".*.corp.example.com"
+                require user_authed == true
+                action allow
+            }
+
+            policy deny_all {
+                action deny
+            }
+        "#;
+
+        let rules = parse_into_ast(&mut input).unwrap();
+        assert_eq!(rules.entries.len(), 3);
+
+        assert_debug_snapshot!("complex_acl", rules);
     }
 
     #[test]
-    fn test_parse_acl_rule_with_multiple_conditions() {
-        let mut input = "git.par01.corp.example.com device.trust_level=low user.group=eng -> backends=par01a,par01b,default allow";
-        let result = parse_acl_rule(&mut input);
-        assert_eq!(result, Ok(ACLRule {
-            hostname: Hostname::Regex("git.par01.corp.example.com".to_string()),
-            conditions: vec![
-                Condition { key: "device.trust_level".to_string(), value: "low".to_string(), operator: Operator::Equals },
-                Condition { key: "user.group".to_string(), value: "eng".to_string(), operator: Operator::Equals }
-            ],
-            backends: Some(vec!["par01a".to_string(), "par01b".to_string(), "default".to_string()]),
-            action: Action::Allow,
-        }));
+    fn parse_deny_templates() {
+        let mut input = r#"
+            policy deny_all {
+                action deny                           explain-template="explain/global-deny.html"
+            }
+        "#;
+
+        let rules = parse_into_ast(&mut input).unwrap();
+        assert_eq!(rules.entries.len(), 1);
+
+        assert_debug_snapshot!("deny_templates", rules);
+    }
+
+    #[test]
+    fn parse_braces_over_multi_lines() {
+        let mut input = r#"
+            route main {
+                when {
+                    host =~ ".*.corp.example.com"
+                    and protocol == "tls"
+                }
+
+                use ["exit1"]
+            }
+
+
+            policy corp {
+                when { host =~ ".*.corp.example.com" and protocol == "tls" }
+                require {
+                    user_authed == true
+                    and trust == "high"
+                }
+
+                action allow
+            }
+
+            policy deny_all {
+                action {
+                    deny explain-template="explain/global-deny.html"
+                }
+            }
+        "#;
+
+        let rules = parse_into_ast(&mut input).unwrap();
+        assert_eq!(rules.entries.len(), 3);
+
+        assert_debug_snapshot!("acl_with_braces", rules);
+    }
+
+    #[test]
+    fn parse_valid_empty_policy_block() {
+        let mut input = r#"
+            policy main {
+            }
+        "#;
+
+        let result = parse_into_ast(&mut input);
+
+        assert_debug_snapshot!("empty_policy_block", result.unwrap());
+    }
+
+    #[test]
+    fn parse_valid_with_lots_of_whitespace() {
+        let mut input = r#"
+            route     main      {
+                
+                use    [   "exit1"  ,  "exit2"   ]  
+                
+                when    src_ip    ==    "1.2.3.4"    
+            }
+        "#;
+
+        let rules = parse_into_ast(&mut input).unwrap();
+
+        assert_debug_snapshot!("route_with_lots_of_whitespace", rules);
+    }
+
+    #[test]
+    fn parse_valid_with_semantically_wrong_rules() {
+        // These are syntactically valid but semantically odd, e.g., using an undefined field
+        let mut input = r#"
+            policy weird_policy {
+                require something_unknown == 42
+                require user.undefined_field != "foo"
+                action allow
+                action deny
+                action allow
+                action deny
+            }
+        "#;
+
+        // Should still parse, producing an AST; semantic correctness is checked elsewhere
+        let rules = parse_into_ast(&mut input).unwrap();
+
+        assert_debug_snapshot!("semantically_wrong_rules", rules);
+    }
+
+    #[test]
+    fn parse_valid_duplicate_action_in_a_block() {
+        let mut input = r#"
+            policy main {
+                action allow
+                action deny
+            }
+        "#;
+        let result = parse_into_ast(&mut input);
+
+        assert_debug_snapshot!("dup_action", result.unwrap());
+    }
+
+    #[test]
+    fn parse_valid_duplicate_when_in_a_block() {
+        let mut input = r#"
+            policy main {
+                when host =~ ".*"
+                when user.authenticated == true
+                action allow
+            }
+        "#;
+        let result = parse_into_ast(&mut input);
+
+        assert_debug_snapshot!("dup_when", result.unwrap());
+    }
+
+    #[test]
+    fn parse_valid_duplicate_require_in_a_block() {
+        let mut input = r#"
+            policy main {
+                require host =~ ".*"
+                require user.authenticated == true
+                action allow
+            }
+        "#;
+        let result = parse_into_ast(&mut input);
+
+        assert_debug_snapshot!("dup_req", result.unwrap());
+    }
+
+    #[test]
+    fn parse_valid_duplicate_policies() {
+        let mut input = r#"
+            policy main {
+                action allow
+            }
+
+            policy main {
+                action deny
+            }
+        "#;
+        let result = parse_into_ast(&mut input);
+
+        assert_debug_snapshot!("dup_policies", result.unwrap());
+    }
+
+    #[test]
+    fn parse_valid_deny_with_template() {
+        let mut input = r#"
+            policy main {
+                action deny explain-template="/tmp/my-explain.html"
+            }
+        "#;
+        let result = parse_into_ast(&mut input);
+
+        assert_debug_snapshot!("deny_with_template", result.unwrap());
+    }
+
+    #[test]
+    fn parse_valid_deny_with_relative_template() {
+        let mut input = r#"
+            policy main {
+                action deny explain-template="./my-explain.html"
+            }
+        "#;
+        let result = parse_into_ast(&mut input);
+
+        assert_debug_snapshot!("deny_with_relative_template", result.unwrap());
+    }
+
+    #[test]
+    fn parse_valid_integers() {
+        let mut input = r#"
+            policy int {
+                when {
+                    a == -1
+                    or b <= -50000
+                    and c >= 10
+                }
+
+                action allow
+            }
+        "#;
+
+        let result = parse_into_ast(&mut input);
+
+        assert_debug_snapshot!("valid_integers", result.unwrap());
+    }
+
+    #[test]
+    fn parse_valid_integer_limits() {
+        let mut input = r#"
+            policy int {
+                when {
+                    e == 9223372036854775806
+                    and g == -9223372036854775807
+                }
+
+                action allow
+            }
+        "#;
+
+        let result = parse_into_ast(&mut input);
+
+        assert_debug_snapshot!("valid_integer_limits", result.unwrap());
+    }
+
+    #[test]
+    fn parse_valid_expression_precedence() {
+        let mut input = r#"
+            policy complex_expr {
+                when {
+                    a == 1
+                    or not b == 2
+                    and c == 3
+                    and not d == 4
+                    or not e == 5
+                    and f == 6
+                }
+
+                action allow
+            }
+        "#;
+
+        let result = parse_into_ast(&mut input);
+
+        assert_debug_snapshot!("valid_expression_precedence", result.unwrap());
+    }
+
+    #[test]
+    fn parse_invalid_route_missing_opening_brace() {
+        let mut input = r#"
+            route main
+                use ["exit1"]
+        "#;
+
+        let result = parse_into_ast(&mut input);
+        assert!(result.is_err(), "Expected parsing error for missing braces");
+
+        assert_snapshot!("invalid_route_missing_opening_brace", result.unwrap_err());
+    }
+
+    #[test]
+    fn parse_invalid_route_missing_closing_brace() {
+        let mut input = r#"
+            route main {
+                use ["exit1"]
+        "#;
+
+        let result = parse_into_ast(&mut input);
+        assert!(result.is_err(), "Expected parsing error for missing braces");
+
+        assert_snapshot!("invalid_route_missing_closing_brace", result.unwrap_err());
+    }
+
+    #[test]
+    fn parse_invalid_policy_missing_brace() {
+        let mut input = r#"
+            policy no_action {
+                require role == "user"
+        "#; // missing closing brace
+
+        let result = parse_into_ast(&mut input);
+        assert!(
+            result.is_err(),
+            "Expected parsing error for missing closing brace in policy block"
+        );
+        assert_snapshot!("invalid_policy_missing_brace", result.unwrap_err());
+    }
+
+    #[test]
+    fn parse_invalid_expression() {
+        let mut input = r#"
+            policy bad_expr {
+                require role ==
+            }
+        "#;
+
+        let result = parse_into_ast(&mut input);
+        assert!(
+            result.is_err(),
+            "Expected parsing error for incomplete expression"
+        );
+        assert_snapshot!("invalid_expression", result.unwrap_err());
+    }
+
+    #[test]
+    fn parse_invalid_regexp_operand() {
+        let mut input = r#"
+            policy bad_expr {
+                require role =~ "*"
+            }
+        "#;
+
+        let result = parse_into_ast(&mut input);
+        assert!(result.is_err(), "Expected parsing error for invalid regexp");
+        assert_snapshot!("invalid_regexp_in_operand", result.unwrap_err());
+    }
+
+    #[test]
+    fn parse_invalid_integer_regexp_operand() {
+        let mut input = r#"
+            policy bad_expr {
+                require role =~ 2350
+            }
+        "#;
+
+        let result = parse_into_ast(&mut input);
+        assert!(result.is_err(), "Expected parsing error for invalid regexp");
+        assert_snapshot!("invalid_integer_in_regexp_operand", result.unwrap_err());
+    }
+
+    #[test]
+    fn parse_invalid_lte_operand() {
+        let mut input = r#"
+            policy bad_expr {
+                require role <= "abc"
+            }
+        "#;
+
+        let result = parse_into_ast(&mut input);
+        assert!(
+            result.is_err(),
+            "Expected parsing error for invalid lte operand"
+        );
+        assert_snapshot!("invalid_type_in_lte_operand", result.unwrap_err());
+    }
+
+    #[test]
+    fn parse_invalid_in_operand() {
+        let mut input = r#"
+            policy bad_expr {
+                require 5 in 6
+            }
+        "#;
+
+        let result = parse_into_ast(&mut input);
+        assert!(
+            result.is_err(),
+            "Expected parsing error for invalid in operand"
+        );
+        assert_snapshot!("invalid_type_in_in_operand", result.unwrap_err());
+    }
+
+    #[test]
+    fn parse_invalid_stuck_together_commands_should_fail() {
+        // Commands and operands without space: "actionallow" instead of "action allow"
+        let mut input = r#"
+            policy broken_policy {
+                actionallow
+            }
+        "#;
+
+        let result = parse_into_ast(&mut input);
+        assert!(
+            result.is_err(),
+            "Expected parsing error for stuck-together commands"
+        );
+
+        assert_snapshot!("stuck_together_commands_error", result.unwrap_err());
+    }
+
+    #[test]
+    fn parse_invalid_multiple_stuck_together_tokens() {
+        let mut input = r#"
+            policy broken_policy {
+                requireuser.authenticated==true
+                actiondeny
+            }
+        "#;
+
+        let result = parse_into_ast(&mut input);
+        assert!(
+            result.is_err(),
+            "Expected parsing error for stuck-together tokens"
+        );
+
+        assert_snapshot!("multiple_stuck_together_tokens_error", result.unwrap_err());
+    }
+
+    #[test]
+    fn parse_invalid_policy_in_the_middle_of_valid() {
+        let mut input = r#"
+            policy good1 {
+                action allow
+            }
+
+            policy good2 {
+                action allow
+            }
+
+            policy broken {
+                when host =~ ".*"
+                requirebroken
+                action allow
+            }
+
+            policy good3 {
+                action allow
+            }
+        "#;
+
+        let result = parse_into_ast(&mut input);
+        assert!(
+            result.is_err(),
+            "Expected parsing error for one invalid policy block"
+        );
+
+        assert_snapshot!("invalid_policy_in_the_middle_of_valid", result.unwrap_err());
+    }
+
+    #[test]
+    fn parse_invalid_uri_in_redirect() {
+        let mut input = r#"
+            policy goaway {
+                action redirect "https:?"
+            }
+        "#;
+
+        let result = parse_into_ast(&mut input);
+        assert!(
+            result.is_err(),
+            "Expected parsing error for one invalid block"
+        );
+
+        assert_snapshot!("invalid_uri_in_redirect", result.unwrap_err());
+    }
+
+    #[test]
+    fn parse_invalid_integer_upper_limit() {
+        let mut input = r#"
+            policy over {
+                when {
+                    e >= 9223372036854775808
+                }
+
+                action allow
+            }
+        "#;
+
+        let result = parse_into_ast(&mut input);
+        assert!(
+            result.is_err(),
+            "Expected parsing error for one invalid block"
+        );
+
+        assert_snapshot!("invalid_integer_upper_limit", result.unwrap_err());
+    }
+
+    #[test]
+    fn parse_invalid_integer_lower_limit() {
+        let mut input = r#"
+            policy over {
+                when {
+                    g <= -9223372036854775808
+                }
+
+                action allow
+            }
+        "#;
+
+        let result = parse_into_ast(&mut input);
+        assert!(
+            result.is_err(),
+            "Expected parsing error for one invalid block"
+        );
+
+        assert_snapshot!("invalid_integer_lower_limit", result.unwrap_err());
     }
 }

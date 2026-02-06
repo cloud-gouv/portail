@@ -1,0 +1,42 @@
+---
+source: src/acl/parser.rs
+expression: rules
+---
+ACLAst {
+    entries: [
+        Policy(
+            PolicyBlock {
+                name: "allow_web",
+                attributes: [
+                    Require(
+                        And(
+                            Comparison(
+                                Identifier(
+                                    "role",
+                                ),
+                                Eq,
+                                String(
+                                    "admin",
+                                ),
+                            ),
+                            Not(
+                                Comparison(
+                                    Identifier(
+                                        "banned",
+                                    ),
+                                    Eq,
+                                    Boolean(
+                                        true,
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                    Action(
+                        Allow,
+                    ),
+                ],
+            },
+        ),
+    ],
+}

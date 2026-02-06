@@ -1,17 +1,18 @@
+use crate::proxy::context::InitialRequestContext;
 use crate::proxy::protocol_detect::{ALPN_H2, ALPN_HTTP1_1};
 use crate::{
     config::{BackendSettings, Settings},
-    proxy::{ProxyError, client_tls, context::RequestContext},
+    proxy::{client_tls, ProxyError},
     state::State,
 };
 use bytes::Bytes;
-use http_body_util::{BodyExt, Empty, combinators::BoxBody};
+use http_body_util::{combinators::BoxBody, BodyExt, Empty};
 use hyper::{
-    Method, Request, Response, StatusCode,
     body::Incoming,
     header,
     server::conn::{http1, http2},
     service::service_fn,
+    Method, Request, Response, StatusCode,
 };
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use std::io;
@@ -40,7 +41,7 @@ enum InboundHttpProtocol {
 pub async fn serve_http1_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     settings: Arc<Settings>,
     state: Arc<RwLock<State>>,
-    ctx: RequestContext,
+    ctx: InitialRequestContext,
     stream: S,
 ) -> Result<(), ProxyError> {
     let io = TokioIo::new(stream);
@@ -70,12 +71,13 @@ pub async fn serve_http1_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
 pub async fn serve_http2_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     settings: Arc<Settings>,
     state: Arc<RwLock<State>>,
-    ctx: RequestContext,
+    ctx: InitialRequestContext,
     stream: S,
 ) -> Result<(), ProxyError> {
     let io = TokioIo::new(stream);
 
     // TODO: update ctx
+    //
 
     // TokioExecutor is a wrapper around tokio::spawn
     // https://docs.rs/hyper-util/latest/src/hyper_util/rt/tokio.rs.html#112
@@ -101,11 +103,13 @@ pub async fn serve_http2_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
 
 async fn handle_http_request(
     req: Request<Incoming>,
-    mut ctx: RequestContext,
+    ctx: InitialRequestContext,
     settings: Arc<Settings>,
     state: Arc<RwLock<State>>,
     inbound_protocol: InboundHttpProtocol,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
+    let mut ctx = ctx.into_local();
+
     if req.method() != Method::CONNECT {
         debug!(
             "Unsupported HTTP method `{}` received, terminating connection",
@@ -117,7 +121,10 @@ async fn handle_http_request(
         return Ok(resp);
     }
 
-    // TODO: update ctx
+    ctx.acl_ctx.insert(
+        "proxy.protocol",
+        crate::acl::ast::ConcreteOperand::String("http"),
+    );
 
     let Some(target_authority) = req.uri().authority() else {
         debug!("Invalid authority in CONNECT URI, terminating connection");
@@ -128,49 +135,108 @@ async fn handle_http_request(
 
     let target_address = target_authority.to_string();
     let mut final_address = target_address.clone();
-    let mut backend_ids: Vec<String> = Vec::with_capacity(1);
-    if let Some(rule) = crate::acl::evaluate(
-        target_authority.host(),
-        &state.read().await.acl_rules,
-        &mut ctx.acl_eval_ctx,
-    ) {
-        match rule.action {
-            crate::acl::Action::Deny => {
-                info!("Request to {} is blocked", target_authority.host());
-                let mut resp = Response::new(empty_body());
-                *resp.status_mut() = StatusCode::FORBIDDEN;
-                return Ok(resp);
-            }
-            crate::acl::Action::Redirect(target) => {
-                info!(
-                    "Request to {} redirected to {}",
-                    target_authority.host(),
-                    target
-                );
-                final_address = target.to_string();
-            }
-            _ => {}
-        }
+    let mut backends: Vec<&BackendSettings> = Vec::with_capacity(1);
+    // We evaluate first whether we are allowed then we evaluate routes.
+    let acl = &state.read().await.acl_rules;
 
-        if let Some(recommended_backends) = rule.backends {
-            backend_ids = recommended_backends;
-        }
+    let default_port = match req.uri().scheme_str().unwrap_or("http") {
+        "http" => 80,
+        "https" => 443,
+        _ => 80,
+    };
+
+    ctx.acl_ctx.insert(
+        "host",
+        crate::acl::ast::ConcreteOperand::String(target_authority.host()),
+    );
+    ctx.acl_ctx.insert(
+        "port",
+        crate::acl::ast::ConcreteOperand::Number(
+            target_authority.port_u16().unwrap_or(default_port).into(),
+        ),
+    );
+    ctx.acl_ctx.insert(
+        "path",
+        crate::acl::ast::ConcreteOperand::String(req.uri().path()),
+    );
+    ctx.acl_ctx.insert(
+        "query",
+        crate::acl::ast::ConcreteOperand::String(req.uri().query().unwrap_or_default()),
+    );
+    ctx.acl_ctx.insert(
+        "method",
+        crate::acl::ast::ConcreteOperand::String(req.method().as_str()),
+    );
+    ctx.acl_ctx.insert(
+        "scheme",
+        crate::acl::ast::ConcreteOperand::String(req.uri().scheme_str().unwrap_or("http")),
+    );
+
+    // TODO: how much header information should we render available?
+
+    let assessment = ctx.acl_ctx.evaluate_request(&acl.hir);
+    if let Err(failure) = assessment {
+        let mut resp = Response::new(empty_body());
+        warn!(
+            "Failed to evaluate a request: {} (Context: {:#?})",
+            failure, ctx
+        );
+        *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+        return Ok(resp);
     }
 
-    if backend_ids.is_empty() {
+    let assessment = assessment.unwrap();
+
+    match assessment.action {
+        // FIXME: render the deny template if there's one.
+        crate::acl::Action::Deny(_explain_template) => {
+            info!("Request to {} is blocked", target_authority.host());
+            let mut resp = Response::new(empty_body());
+            *resp.status_mut() = StatusCode::FORBIDDEN;
+            return Ok(resp);
+        }
+        crate::acl::Action::Redirect(target) => {
+            info!(
+                "Request to {} redirected to {}",
+                target_authority.host(),
+                target
+            );
+            final_address = target.to_string();
+        }
+
+        _ => {}
+    }
+
+    let recommended_routes = ctx.acl_ctx.evaluate_routes(&acl.hir);
+    if let Err(failure) = recommended_routes {
+        let mut resp = Response::new(empty_body());
+        warn!(
+            "Failed to evaluate a request: {} (Context: {:#?})",
+            failure, ctx
+        );
+        *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+        return Ok(resp);
+    }
+    let mut recommended_routes = recommended_routes.unwrap();
+
+    if !recommended_routes.is_empty() {
+        backends.append(&mut recommended_routes);
+    }
+
+    if backends.is_empty() {
         if let Some(ref backend_id) = state.read().await.default_backend {
-            backend_ids = vec![backend_id.clone()];
+            let backend = settings.backends.get(backend_id).expect(&format!(
+                "BUG: default backend {backend_id} went away from settings"
+            ));
+
+            backends.push(backend);
         }
     }
 
-    backend_ids.reverse();
+    backends.reverse();
 
     let mut stream: Option<OutboundStream> = None;
-    for backend_id in &backend_ids {
-        let Some(backend) = settings.backends.get(backend_id) else {
-            error!("Backend {} not found in settings", backend_id);
-            continue;
-        };
+    for backend in backends {
         debug!(
             "Backend {} selected for HTTP CONNECT to {}",
             backend.target_address, final_address

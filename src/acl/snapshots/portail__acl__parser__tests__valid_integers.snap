@@ -1,0 +1,51 @@
+---
+source: src/acl/parser.rs
+expression: result.unwrap()
+---
+ACLAst {
+    entries: [
+        Policy(
+            PolicyBlock {
+                name: "int",
+                attributes: [
+                    When(
+                        Or(
+                            Comparison(
+                                Identifier(
+                                    "a",
+                                ),
+                                Eq,
+                                Number(
+                                    -1,
+                                ),
+                            ),
+                            And(
+                                Comparison(
+                                    Identifier(
+                                        "b",
+                                    ),
+                                    Lte,
+                                    Number(
+                                        -50000,
+                                    ),
+                                ),
+                                Comparison(
+                                    Identifier(
+                                        "c",
+                                    ),
+                                    Gte,
+                                    Number(
+                                        10,
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                    Action(
+                        Allow,
+                    ),
+                ],
+            },
+        ),
+    ],
+}

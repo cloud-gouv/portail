@@ -1,0 +1,45 @@
+---
+source: src/acl/parser.rs
+expression: result.unwrap()
+---
+ACLAst {
+    entries: [
+        Policy(
+            PolicyBlock {
+                name: "main",
+                attributes: [
+                    Require(
+                        Comparison(
+                            Identifier(
+                                "host",
+                            ),
+                            Regex,
+                            Regex(
+                                Regex(
+                                    ".*",
+                                ),
+                            ),
+                        ),
+                    ),
+                    Require(
+                        Comparison(
+                            DottedIdentifier(
+                                [
+                                    "user",
+                                    "authenticated",
+                                ],
+                            ),
+                            Eq,
+                            Boolean(
+                                true,
+                            ),
+                        ),
+                    ),
+                    Action(
+                        Allow,
+                    ),
+                ],
+            },
+        ),
+    ],
+}
