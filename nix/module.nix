@@ -93,7 +93,7 @@ in
 
       serviceConfig = {
         # Use "notify-reload" when https://github.com/cloud-gouv/portail/issues/9 is done.
-        Type = "exec"; # TODO: notify
+        Type = "notify";
         NotifyAccess = "main";
         ExecStart = "${cfg.package}/bin/portail daemon --config ${configFile}";
 

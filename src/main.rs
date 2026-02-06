@@ -1,10 +1,12 @@
 use std::{path::PathBuf, sync::Arc};
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
-use tracing::{info, debug};
+use tracing::{debug, info, warn};
 use tokio::{net::TcpListener, sync::RwLock};
 use tracing_subscriber::EnvFilter;
 use std::os::fd::{FromRawFd, RawFd};
+
+use crate::systemd::sd_notify_ready;
 
 mod acl;
 mod config;
@@ -61,6 +63,12 @@ async fn main() -> Result<()> {
             std.set_nonblocking(true)?;
             let tcp_listener = tokio::net::TcpListener::from_std(std)?;
             info!("starting services");
+
+            if let Err(e) = sd_notify_ready() {
+                warn!("failed to notify systemd about readiness: {e}");
+            } else {
+                info!("notified systemd about readiness");
+            }
 
             tokio::try_join!(
                 proxy::start(settings.clone(), state.clone(), tcp_listener),
