@@ -1,6 +1,8 @@
 use std::path::Path;
+use anyhow::Context;
+use thiserror::Error;
 use winnow::{
-    ModalResult, Parser, ascii::{Caseless, alphanumeric1, multispace0, multispace1, till_line_ending}, combinator::{alt, opt, preceded, repeat, separated}, error::StrContext, stream::AsChar, token::{take_till, take_while}
+    ModalResult, Parser, ascii::{Caseless, alphanumeric1, multispace0, multispace1, till_line_ending}, combinator::{alt, opt, preceded, repeat, separated}, error::{ContextError, ParseError, StrContext}, stream::AsChar, token::{take_till, take_while}
 };
 use tracing::info;
 
@@ -42,6 +44,38 @@ pub struct ACLRule {
     pub backends: Option<Vec<String>>,
     pub action: Action,
 }
+
+#[derive(Debug)]
+pub struct ACLError {
+    message: String,
+    span: std::ops::Range<usize>,
+    input: String,
+}
+
+impl ACLError {
+    fn from_parse(error: ParseError<&str, ContextError>) -> Self {
+        Self {
+            message: error.inner().to_string(),
+            input: (*error.input()).to_owned(),
+            span: error.char_span()
+        }
+    }
+}
+
+impl std::fmt::Display for ACLError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let message = annotate_snippets::Level::ERROR.primary_title(&self.message)
+            .element(annotate_snippets::Snippet::source(&self.input)
+                .fold(true)
+                .annotation(annotate_snippets::AnnotationKind::Primary.span(self.span.clone()))
+            );
+        let renderer = annotate_snippets::Renderer::plain();
+        let rendered = renderer.render(&[message]);
+        rendered.fmt(f)
+    }
+}
+
+impl std::error::Error for ACLError { }
 
 fn parse_regex_hostname(input: &mut &str) -> ModalResult<Hostname> {
     take_till(1.., AsChar::is_space)
@@ -143,7 +177,7 @@ fn parse_acl_rule(input: &mut &str) -> ModalResult<ACLRule> {
     .parse_next(input)
 }
 
-fn parse_acl_rules<'i>(input: &mut &'i str) -> ModalResult<Vec<ACLRule>> {
+pub fn parse_acl_rules<'i>(input: &mut &'i str) -> Result<Vec<ACLRule>, ACLError> {
     // TODO: this is very wrong, this doesn't support broken parses because repeat() will just
     // ignore.
     // we need to peek if after comments + empty + parsing hostname, then the parsing must succeed
@@ -151,12 +185,13 @@ fn parse_acl_rules<'i>(input: &mut &'i str) -> ModalResult<Vec<ACLRule>> {
     repeat(0..,
         parse_acl_rule.context(StrContext::Label("ACL rule")),
     )
-    .parse_next(input)
+    .parse(input)
+    .map_err(ACLError::from_parse)
 }
 
-pub fn load_rules_from_file(path: &Path) -> std::io::Result<Vec<ACLRule>> {
-    let contents = String::from_utf8_lossy(&std::fs::read(path)?).into_owned();
-    let rules = parse_acl_rules(&mut contents.as_str()).unwrap();
+pub fn load_rules_from_file(path: &Path) -> anyhow::Result<Vec<ACLRule>> {
+    let contents = String::from_utf8_lossy(&std::fs::read(path).context("while reading ACL file")?).into_owned();
+    let rules = parse_acl_rules(&mut contents.as_str()).context("while parsing ACL rules")?;
     info!("Parsed {} ACL rules", rules.len());
     Ok(rules)
 }
@@ -168,44 +203,45 @@ mod tests {
     #[test]
     fn test_parse_acl_rule_with_comment_before_rule() {
         let mut input = "# This is a comment\n\n \n # This is another comment\n git.corp.example.com device.trust_level=high -> allow";
-        let results = parse_acl_rules(&mut input);
+        let results = parse_acl_rules(&mut input).unwrap();
 
-        assert_eq!(results, Ok(vec![ACLRule {
+        assert_eq!(results, vec![ACLRule {
             hostname: Hostname::Regex("git.corp.example.com".to_string()),
             conditions: vec![
                 Condition { key: "device.trust_level".to_string(), value: "high".to_string(), operator: Operator::Equals }
             ],
             backends: None,
             action: Action::Allow,
-        }]));
+        }]);
     }
 
     #[test]
     fn test_parse_acl_rule_with_exact_hostname() {
         let mut input = "git.corp.example.com device.trust_level=high -> allow";
-        let result = parse_acl_rule(&mut input);
-        assert_eq!(result, Ok(ACLRule {
+        let result = parse_acl_rule(&mut input).unwrap();
+
+        assert_eq!(result, ACLRule {
             hostname: Hostname::Regex("git.corp.example.com".to_string()),
             conditions: vec![
                 Condition { key: "device.trust_level".to_string(), value: "high".to_string(), operator: Operator::Equals }
             ],
             backends: None,
             action: Action::Allow,
-        }));
+        });
     }
 
     #[test]
     fn test_parse_acl_rule_with_regex_hostname() {
         let mut input = ".*\\.infra.corp.example.com device.trust_level=low -> allow";
-        let result = parse_acl_rule(&mut input);
-        assert_eq!(result, Ok(ACLRule {
+        let result = parse_acl_rule(&mut input).unwrap();
+        assert_eq!(result, ACLRule {
             hostname: Hostname::Regex(".*\\.infra.corp.example.com".to_string()),
             conditions: vec![
                 Condition { key: "device.trust_level".to_string(), value: "low".to_string(), operator: Operator::Equals }
             ],
             backends: None,
             action: Action::Allow,
-        }));
+        });
     }
 
     #[test]
