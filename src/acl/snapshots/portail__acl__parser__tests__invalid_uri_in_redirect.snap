@@ -1,0 +1,13 @@
+---
+source: src/acl/parser.rs
+expression: result.unwrap_err()
+---
+error: Failure to parse the ACL rules
+  |
+1 |
+2 |             policy goaway {
+3 |                 action redirect "https:?"
+  |                                ^ invalid URI
+4 |             }
+5 |         
+  |

@@ -1,0 +1,27 @@
+---
+source: src/acl/parser.rs
+expression: result.unwrap_err()
+---
+error: Failure to parse the ACL rules
+   |
+ 1 |
+ 2 |             policy good1 {
+ 3 |                 action allow
+ 4 |             }
+ 5 |
+ 6 |             policy good2 {
+ 7 |                 action allow
+ 8 |             }
+ 9 |
+10 |             policy broken {
+11 |                 when host =~ ".*"
+12 |                 requirebroken
+   |                 ^ invalid policy block
+13 |                 action allow
+14 |             }
+15 |
+16 |             policy good3 {
+17 |                 action allow
+18 |             }
+19 |         
+   |

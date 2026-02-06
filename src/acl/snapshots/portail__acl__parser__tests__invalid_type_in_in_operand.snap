@@ -1,0 +1,13 @@
+---
+source: src/acl/parser.rs
+expression: result.unwrap_err()
+---
+error: Failure to parse the ACL rules
+  |
+1 |
+2 |             policy bad_expr {
+3 |                 require 5 in 6
+  |                              ^ invalid set of string literals
+4 |             }
+5 |         
+  |

@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::{fmt::Display, net::SocketAddr};
 
 pub enum InboundStream {
     TcpStream(tokio::net::TcpStream),
@@ -12,22 +12,70 @@ enum ProxyProtocol {
     Http3,
 }
 
+#[derive(Debug, Clone)]
+pub enum TargetAddr {
+    Domain(String, u16),
+    IP(SocketAddr),
+}
+
+impl TargetAddr {
+    pub fn into_string_and_port(self) -> (String, u16) {
+        match self {
+            Self::Domain(domain, port) => (domain, port),
+            Self::IP(ip) => (ip.ip().to_string(), ip.port()),
+        }
+    }
+}
+
+impl Display for TargetAddr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Domain(domain, port) => f.write_fmt(format_args!("{}:{}", domain, port)),
+            Self::IP(ip) => f.write_fmt(format_args!("{}", ip)),
+        }
+    }
+}
+
+impl From<fast_socks5::util::target_addr::TargetAddr> for TargetAddr {
+    fn from(value: fast_socks5::util::target_addr::TargetAddr) -> Self {
+        match value {
+            fast_socks5::util::target_addr::TargetAddr::Ip(socket_addr) => Self::IP(socket_addr),
+            fast_socks5::util::target_addr::TargetAddr::Domain(domain, port) => {
+                Self::Domain(domain, port)
+            }
+        }
+    }
+}
+
 pub struct TargetContext {
-    pub initial_target: String,
-    pub resolved_target: Option<String>,
+    pub initial_target: TargetAddr,
+    pub resolved_target: Option<TargetAddr>,
 }
 
-#[derive(Clone)]
-pub struct RequestContext {
+#[derive(Debug, Clone)]
+pub struct InitialRequestContext {
     pub client_address: SocketAddr,
-    pub acl_eval_ctx: crate::acl::EvalContext,
+    pub acl_ctx: crate::acl::OwnedEvaluationContext,
 }
 
-impl RequestContext {
+#[derive(Debug, Clone)]
+pub struct LocalRequestContext<'s> {
+    pub client_address: &'s SocketAddr,
+    pub acl_ctx: crate::acl::EvaluationContext<'s>,
+}
+
+impl InitialRequestContext {
     pub fn new(client_address: SocketAddr) -> Self {
         Self {
             client_address,
-            acl_eval_ctx: crate::acl::EvalContext::new(),
+            acl_ctx: crate::acl::OwnedEvaluationContext::empty(),
+        }
+    }
+
+    pub fn into_local<'s>(&'s self) -> LocalRequestContext<'s> {
+        LocalRequestContext {
+            client_address: &self.client_address,
+            acl_ctx: self.acl_ctx.fork(),
         }
     }
 }

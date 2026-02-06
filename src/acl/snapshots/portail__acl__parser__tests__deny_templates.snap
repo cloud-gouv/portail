@@ -1,0 +1,22 @@
+---
+source: src/acl/parser.rs
+expression: rules
+---
+ACLAst {
+    entries: [
+        Policy(
+            PolicyBlock {
+                name: "deny_all",
+                attributes: [
+                    Action(
+                        Deny(
+                            Some(
+                                "explain/global-deny.html",
+                            ),
+                        ),
+                    ),
+                ],
+            },
+        ),
+    ],
+}
