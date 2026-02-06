@@ -1,0 +1,79 @@
+---
+source: src/acl/parser.rs
+expression: rules
+---
+ACLAst {
+    entries: [
+        Route(
+            RouteDefinition {
+                name: "main",
+                attributes: [
+                    When(
+                        Comparison(
+                            Identifier(
+                                "host",
+                            ),
+                            Regex,
+                            Regex(
+                                Regex(
+                                    ".*.corp.example.com",
+                                ),
+                            ),
+                        ),
+                    ),
+                    Use(
+                        [
+                            "exit1",
+                        ],
+                    ),
+                ],
+            },
+        ),
+        Policy(
+            PolicyBlock {
+                name: "corp",
+                attributes: [
+                    When(
+                        Comparison(
+                            Identifier(
+                                "host",
+                            ),
+                            Regex,
+                            Regex(
+                                Regex(
+                                    ".*.corp.example.com",
+                                ),
+                            ),
+                        ),
+                    ),
+                    Require(
+                        Comparison(
+                            Identifier(
+                                "user_authed",
+                            ),
+                            Eq,
+                            Boolean(
+                                true,
+                            ),
+                        ),
+                    ),
+                    Action(
+                        Allow,
+                    ),
+                ],
+            },
+        ),
+        Policy(
+            PolicyBlock {
+                name: "deny_all",
+                attributes: [
+                    Action(
+                        Deny(
+                            None,
+                        ),
+                    ),
+                ],
+            },
+        ),
+    ],
+}

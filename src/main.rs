@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use std::os::fd::FromRawFd;
 use std::{path::PathBuf, sync::Arc};
 use tokio::sync::RwLock;
+use tracing::{error, level_filters::LevelFilter};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -75,6 +76,16 @@ enum Commands {
         #[clap(subcommand)]
         command: RpcCommands,
     },
+
+    /// Checks the syntax of this ACL file and returns non-zero if there's a parse error while
+    /// printing a diagnostic.
+    CheckACLSyntax {
+        #[arg(short, long, default_value = get_default_config_path().into_os_string(), value_name = "FILE")]
+        /// Path to the configuration file
+        config: PathBuf,
+        /// Path to the ACL file
+        acl_file: PathBuf,
+    },
 }
 
 #[tokio::main]
@@ -82,7 +93,11 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     tracing_subscriber::fmt::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
+        .with_env_filter(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::INFO.into())
+                .from_env_lossy(),
+        )
         .init();
 
     match cli.command {
@@ -194,6 +209,24 @@ async fn main() -> Result<()> {
             )?;
 
             info!("exiting");
+        }
+        Commands::CheckACLSyntax { config, acl_file } => {
+            let contents = String::from_utf8_lossy(
+                &std::fs::read(&acl_file).context("while reading ACL file")?,
+            )
+            .into_owned();
+            let settings: Arc<config::Settings> = Arc::new(config::init(&config));
+            match acl::load_rules_from_str(&mut contents.as_str(), &settings) {
+                Ok(rules) => info!(
+                    "Parsed {} ACL policies and {} routes successfully",
+                    rules.hir.policies.len(),
+                    rules.hir.routes.len()
+                ),
+                Err(err) => {
+                    error!("Error while parsing the ACL rules:\n{err}");
+                    std::process::exit(1);
+                }
+            }
         }
     }
 
