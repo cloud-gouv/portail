@@ -1,4 +1,4 @@
-use std::{collections::HashMap, net::SocketAddr, path::PathBuf};
+use std::{collections::HashMap, net::SocketAddr, path::{Path, PathBuf}};
 use chrono::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -48,20 +48,23 @@ pub struct Settings {
     /// Global generic options for proxying
     #[serde_as(as = "serde_with::DurationSeconds<i64>")]
     pub request_timeout: Duration,
+
+    /// Whether to disable the TCP Nagle optimisation on the proxy side.
     #[serde(default)]
     pub tcp_nodelay: bool,
 
     /// List of backends to which we can route proxy queries.
+    #[serde(default)]
     pub backends: HashMap<String, BackendSettings>,
 
     /// Settings for the workload socket (e.g. this is where clients connect to, e.g. Firefox or
     /// another instance of this proxy via routing)
-    pub listener: ListenSettings,
+    pub listener: Option<ListenSettings>,
     /// Settings for connecting to other proxy instances or websites via client certificate
     /// authentication.
-    pub escaper: EscapeSettings,
+    pub escaper: Option<EscapeSettings>,
 }
 
-pub fn init() -> Settings {
-    toml::from_slice(&std::fs::read("./config.toml").expect("Failed to read config file")).expect("Failed to parse config file")
+pub fn init(config_path: &Path) -> Settings {
+    toml::from_slice(&std::fs::read(config_path).expect("Failed to read config file")).expect("Failed to parse config file")
 }
