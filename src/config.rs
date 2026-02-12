@@ -1,5 +1,9 @@
-use std::{collections::HashMap, net::SocketAddr, path::{Path, PathBuf}};
 use chrono::Duration;
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -9,7 +13,7 @@ pub struct BackendSettings {
     pub target_address: SocketAddr,
     /// Whether this backend requires a TLS connection with a client certificate.
     #[serde(default)]
-    pub identity_aware: bool
+    pub identity_aware: bool,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -30,6 +34,15 @@ pub struct EscapeSettings {
     pub tls_privkey: Option<PathBuf>,
     pub tls_certificate: Option<PathBuf>,
     pub pkcs11_uri: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct RPCSettings {
+    /// Trusted groups are allowed to call write RPC such as SetDefaultBackend or Reload.
+    /// They cannot disable the proxy functionality nonetheless.
+    #[serde(default)]
+    pub trusted_groups: Vec<String>,
 }
 
 #[serde_with::serde_as]
@@ -69,8 +82,13 @@ pub struct Settings {
     /// Settings for connecting to other proxy instances or websites via client certificate
     /// authentication.
     pub escaper: Option<EscapeSettings>,
+
+    /// Settings for the local RPC (authorization).
+    #[serde(default)]
+    pub rpc: RPCSettings,
 }
 
 pub fn init(config_path: &Path) -> Settings {
-    toml::from_slice(&std::fs::read(config_path).expect("Failed to read config file")).expect("Failed to parse config file")
+    toml::from_slice(&std::fs::read(config_path).expect("Failed to read config file"))
+        .expect("Failed to parse config file")
 }

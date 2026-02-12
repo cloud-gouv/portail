@@ -48,6 +48,50 @@ let
       443
     ];
   };
+
+  mkPortailNode = { address }: { nodes, ... }: {
+    imports = [ ../module.nix portailEnv ];
+
+    networking.interfaces.eth1.ipv4.addresses = [
+      {
+        inherit address;
+        prefixLength = 24;
+      }
+    ];
+
+    networking.hosts."${nodes.corp-server.networking.primaryIPAddress}" =
+      [ "hello.corp.example.com" "bad.corp.example.com" ];
+
+    networking.firewall.allowedTCPPorts = [ 8080 ];
+
+    services.portail = {
+      enable = true;
+      enableAtBoot = true;
+      proxyListenStream = "0.0.0.0:8080";
+      acl.filter.rules = [
+        "hello.corp.example.com -> allow"
+      ];
+    };
+  };
+
+  mkMicrosocksNode = { address }: { nodes, ... }: {
+    networking.interfaces.eth1.ipv4.addresses = [
+      {
+        inherit address;
+        prefixLength = 24;
+      }
+    ];
+
+    services.microsocks = {
+      enable = true;
+      ip = "0.0.0.0";
+      port = 8080;
+    };
+
+    networking.hosts."${nodes.corp-server.networking.primaryIPAddress}" = [ "hello.corp.example.com" "bad.corp.example.com" ];
+    networking.firewall.allowedTCPPorts = [ 8080 ];
+  };
+
   portailEnv = {
     systemd.services.portail.environment = {
       RUST_LOG = "portail=debug";
@@ -175,23 +219,8 @@ in
   microsocks-upstream = pkgs.testers.nixosTest {
     name = "microsocks-upstream";
     nodes = {
-      microsocks = { nodes, ... }: {
-        networking.interfaces.eth1.ipv4.addresses = [
-          {
-            address = "192.168.1.50";
-            prefixLength = 24;
-          }
-        ];
+      microsocks = mkMicrosocksNode { address = "192.168.1.50"; };
 
-        services.microsocks = {
-          enable = true;
-          ip = "0.0.0.0";
-          port = 8080;
-        };
-
-        networking.hosts."${nodes.corp-server.networking.primaryIPAddress}" = [ "hello.corp.example.com" "bad.corp.example.com" ];
-        networking.firewall.allowedTCPPorts = [ 8080 ];
-      };
       corp-server = mkServiceNode { };
       node = { nodes, ... }: { 
         imports = [ ../module.nix portailEnv ];
@@ -262,30 +291,7 @@ in
     nodes = {
       corp-server = mkServiceNode { };
 
-      portail-hop = { nodes, ... }: {
-        imports = [ ../module.nix portailEnv ];
-
-        networking.interfaces.eth1.ipv4.addresses = [
-          {
-            address = "192.168.1.60";
-            prefixLength = 24;
-          }
-        ];
-
-        networking.hosts."${nodes.corp-server.networking.primaryIPAddress}" =
-          [ "hello.corp.example.com" "bad.corp.example.com" ];
-
-        networking.firewall.allowedTCPPorts = [ 8080 ];
-
-        services.portail = {
-          enable = true;
-          enableAtBoot = true;
-          proxyListenStream = "0.0.0.0:8080";
-          acl.filter.rules = [
-            "hello.corp.example.com -> allow"
-          ];
-        };
-      };
+      portail-hop = mkPortailNode { address = "192.168.1.60"; };
 
       node = { nodes, ... }: {
         imports = [ ../module.nix portailEnv ];
@@ -351,4 +357,111 @@ in
     '';
   };
 
+  portail-backend-dynamic-switching = pkgs.testers.nixosTest {
+    name = "portail-multiple-backends";
+    nodes = {
+      corp-server = mkServiceNode { };
+
+      portail-alpha = mkPortailNode {
+        address = "192.168.1.60";
+      };
+
+      microsocks-beta = mkMicrosocksNode {
+        address = "192.168.1.61";
+      };
+
+      node = { nodes, ... }: {
+        imports = [ ../module.nix portailEnv ];
+
+        networking.interfaces.eth1.ipv4.addresses = [
+          {
+            address = "192.168.1.100";
+            prefixLength = 24;
+          }
+        ];
+
+        networking.hosts."${nodes.corp-server.networking.primaryIPAddress}" =
+          [ "hello.corp.example.com" "bad.corp.example.com" ];
+
+        services.portail = {
+          enable = true;
+          enableAtBoot = true;
+
+          settings = {
+            default-backend = "alpha";
+            backends = {
+              alpha = {
+                target-address =
+                  "${nodes.portail-alpha.networking.primaryIPAddress}:8080";
+              };
+
+              beta.target-address = "${nodes.microsocks-beta.networking.primaryIPAddress}:8080";
+            };
+          };
+
+          acl.filter.rules = [
+            "hello.corp.example.com -> allow"
+          ];
+        };
+      };
+    };
+
+    testScript = ''
+      import json
+
+      start_all()
+
+      node.wait_for_unit("multi-user.target")
+      node.wait_for_unit("portail.service")
+
+      portail_alpha.wait_for_unit("multi-user.target")
+      portail_alpha.wait_for_unit("portail.service")
+
+      microsocks_beta.wait_for_unit("multi-user.target")
+      microsocks_beta.wait_for_unit("microsocks.service")
+
+      corp_server.wait_for_unit("multi-user.target")
+      corp_server.wait_for_open_port(80)
+
+      node.wait_for_open_port(8080)
+      portail_alpha.wait_for_open_port(8080)
+      microsocks_beta.wait_for_open_port(8080)
+
+      alpha_ip = "192.168.1.60"
+      beta_ip = "192.168.1.61"
+      self_ip = "192.168.1.100"
+
+      def rpc(*flags):
+        return json.loads(node.succeed(
+          "portail rpc --json " + ' '.join(flags)
+        ))
+
+      # Verify the current default backend is alpha
+      assert rpc("print-current-backend")["backend_id"] == "alpha", "Expected current backend to alpha"
+
+      # Test SOCKS5 curl -> portail -> portail alpha -> corp-server
+      result = json.loads(node.succeed(
+        "curl --fail --socks5 http://127.0.0.1:8080 http://hello.corp.example.com"
+      ))
+
+      assert (
+        result['service'] == 'hello.corp'
+        and result['remote_addr'] == alpha_ip
+      ), "Unexpected result from the web service: {}".format(json.dumps(result))
+
+      # Dynamic switch to backend beta
+      assert rpc("set-default-backend", "beta").get("success", False), "Unable to switch the default backend"
+      assert rpc("print-current-backend")["backend_id"] == "beta", "Expected current backend to beta"
+
+      # Test SOCKS5 curl -> portail -> microsocks beta -> corp-server
+      result = json.loads(node.succeed(
+        "curl --fail --socks5 http://127.0.0.1:8080 http://hello.corp.example.com"
+      ))
+
+      assert (
+        result['service'] == 'hello.corp'
+        and result['remote_addr'] == beta_ip
+      ), "Unexpected result from the web service: {}".format(json.dumps(result))
+    '';
+  };
 }

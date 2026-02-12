@@ -54,6 +54,11 @@ in
   };
 
   config = mkIf cfg.enable {
+    environment.systemPackages = [
+      # For the RPC CLI.
+      cfg.package
+    ];
+
     services.portail.settings = {
       filter-acl-rules-path = aclRulesFilePath;
       request-timeout = mkDefault 30;
@@ -78,7 +83,7 @@ in
         socketConfig = {
           Service = "portail.service";
           Accept = "no";
-          ListenStream = "/run/portail/control.socket";
+          ListenStream = "/run/portail/fr.gouv.portail.Control";
           PassCredentials = true;
           FileDescriptorName = "control";
         };

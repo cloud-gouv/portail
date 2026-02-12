@@ -6,6 +6,7 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
+use crate::rpc::fr_gouv_portail_control::GetCurrentBackendOutput;
 use crate::systemd::sd_notify_ready;
 
 mod acl;
@@ -14,6 +15,8 @@ mod proxy;
 mod rpc;
 mod state;
 mod systemd;
+
+use rpc::fr_gouv_portail_control::Control;
 
 #[derive(Parser)]
 #[command(name = "Portail")]
@@ -27,10 +30,25 @@ fn get_default_config_path() -> PathBuf {
     "/etc/portail.toml".into()
 }
 
+fn get_default_socket_path() -> PathBuf {
+    "/run/portail/fr.gouv.portail.Control".into()
+}
+
+#[derive(Subcommand)]
+enum RpcCommands {
+    /// Print default backend via RPC
+    PrintCurrentBackend,
+
+    /// Change the current default backend via RPC.
+    SetDefaultBackend {
+        /// Identifier of the backend in the settings
+        backend_id: String,
+    },
+}
+
 #[derive(Subcommand)]
 enum Commands {
-    /// Run the portail daemon
-    /// Currently, it expect socket activation.
+    /// Run the portail daemon.
     Daemon {
         #[arg(short, long, default_value = get_default_config_path().into_os_string(), value_name = "FILE")]
         /// Path to the configuration file
@@ -41,6 +59,21 @@ enum Commands {
         #[arg(long, value_name = "FILE")]
         /// Path where to create the RPC socket if the daemon must create it itself
         bind_rpc_socket: Option<String>,
+    },
+
+    /// Run RPC commands to the daemon.
+    Rpc {
+        /// Path to the Varlink RPC socket.
+        #[arg(long, value_name = "SOCKET", default_value = get_default_socket_path().into_os_string())]
+        rpc_socket: PathBuf,
+
+        /// Whether to provide JSON output for scripting.
+        #[arg(long, value_name = "BOOLEAN", default_value_t = false)]
+        json: bool,
+
+        /// RPC command.
+        #[clap(subcommand)]
+        command: RpcCommands,
     },
 }
 
@@ -53,6 +86,63 @@ async fn main() -> Result<()> {
         .init();
 
     match cli.command {
+        Commands::Rpc {
+            rpc_socket,
+            json,
+            command,
+        } => {
+            match command {
+                RpcCommands::PrintCurrentBackend => {
+                    let mut connection = zlink::unix::connect(&rpc_socket).await.context(
+                        format!("Opening the RPC socket at path '{}'", rpc_socket.display()),
+                    )?;
+
+                    let cur_backend = connection
+                            .get_current_backend()
+                            .await
+                            .context("During Varlink low-level communications. Are you using same versions of Portail on both sides?")?
+                            .context("Failed to get current backend")?
+                            .backend_id;
+
+                    if !json {
+                        println!("Current backend: {}", cur_backend);
+                    } else {
+                        serde_json::to_writer(
+                            std::io::stdout(),
+                            &GetCurrentBackendOutput {
+                                backend_id: cur_backend,
+                            },
+                        )
+                        .context("While writing JSON")?;
+                    }
+                }
+
+                RpcCommands::SetDefaultBackend { backend_id } => {
+                    let mut connection = zlink::unix::connect(&rpc_socket).await.context(
+                        format!("Opening the RPC socket at path '{}'", rpc_socket.display()),
+                    )?;
+
+                    connection
+                        .set_default_backend(&backend_id)
+                        .await
+                        .context("During Varlink low-level communications. Are you using same versions of Portail on both sides?")?
+                        .context("Failed to set default backend")?;
+
+                    if !json {
+                        println!("Default backend changed successfully.");
+                    } else {
+                        serde_json::to_writer(
+                            std::io::stdout(),
+                            &serde_json::json!({
+                                "success": true
+                            }),
+                        )
+                        .context("While writing JSON")?;
+                    }
+                }
+            }
+        }
+
         Commands::Daemon {
             config,
             bind_proxy_address,
@@ -61,7 +151,7 @@ async fn main() -> Result<()> {
             let settings: Arc<config::Settings> = Arc::new(config::init(&config));
 
             let state: Arc<RwLock<state::State>> = Arc::new(RwLock::new(
-                    state::init(&settings).context("While initializing application state")?
+                state::init(&settings).context("While initializing application state")?,
             ));
 
             let fds_named = systemd::listen_fds_named();
@@ -100,7 +190,7 @@ async fn main() -> Result<()> {
 
             tokio::try_join!(
                 proxy::start(settings.clone(), state.clone(), tcp_listener),
-                rpc::start(settings.clone(), rpc_listener),
+                rpc::start(settings.clone(), state.clone(), rpc_listener),
             )?;
 
             info!("exiting");

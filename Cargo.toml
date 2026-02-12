@@ -11,6 +11,8 @@ clap = { version = "4.5.57", features = ["derive", "string"] }
 fast-socks5 = "1.0.0"
 http = "1.4.0"
 http-body-util = "0.1.3"
+# Remove once https://github.com/z-galaxy/zlink/issues/230 makes it into a release.
+futures-util = "0.3.32"
 hyper = { version = "1.8.1", features = ["full"] }
 hyper-util = { version = "0.1.20", features = ["tokio", "server", "http1"] }
 nix = { version = "0.31.1", features = ["socket", "uio", "net"] }
@@ -26,5 +28,5 @@ tokio-rustls = "0.26.4"
 toml = "0.9.11"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
-varlink = { version = "13.0.0", features = ["tokio"] }
 winnow = "0.7.14"
+zlink = { version = "0.4.0", features = ["introspection"] }
