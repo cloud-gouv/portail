@@ -2,6 +2,7 @@
 name = "portail"
 version = "0.1.0"
 edition = "2024"
+build = "build.rs"
 
 [dependencies]
 anyhow = "1.0.100"
@@ -14,6 +15,7 @@ nix = { version = "0.31.1", features = ["socket", "uio", "net"] }
 peekable = { version = "0.4.1", features = ["tokio"] }
 regex = "1.12.2"
 serde = { version = "1.0.228", features = ["derive"] }
+serde_derive = "1.0.228"
 serde_json = "1.0.149"
 serde_with = { version = "3.16.1", features = ["chrono"] }
 thiserror = "2.0.18"
@@ -22,5 +24,8 @@ tokio-rustls = "0.26.4"
 toml = "0.9.11"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
-varlink = { version = "13.0.0", features = ["tokio"] }
+varlink = { git = "https://github.com/RaitoBezarius/varlink-rust#master", features = ["tokio"] }
 winnow = "0.7.14"
+
+[build-dependencies]
+varlink_generator = "13.0"
