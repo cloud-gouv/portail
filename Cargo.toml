@@ -13,6 +13,8 @@ hyper = { version = "1.8.1", features = ["full"] }
 nix = { version = "0.31.1", features = ["socket", "uio", "net"] }
 peekable = { version = "0.4.1", features = ["tokio"] }
 regex = "1.12.2"
+rustls-pemfile = "2.2.0"
+rustls-webpki = "0.103.9"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 serde_with = { version = "3.16.1", features = ["chrono"] }
