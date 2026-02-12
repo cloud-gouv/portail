@@ -4,7 +4,7 @@ use thiserror::Error;
 use fast_socks5::SocksError;
 use tokio::sync::RwLock;
 use tracing::error;
-use tokio_rustls::{TlsAcceptor, TlsStream};
+use tokio_rustls::{TlsAcceptor, TlsStream, rustls::{ServerConfig, server::{VerifierBuilderError, WebPkiClientVerifier}}};
 
 use crate::{config::Settings, proxy::context::RequestContext, state::State};
 
@@ -65,13 +65,50 @@ async fn serve_unauthenticated_proxy(
     Ok(())
 }
 
+#[derive(Debug, Error)]
+enum ServerTLSConfigError {
+    #[error("Setting the single certificates failed: {0}")]
+    ServerCertificateConfigError(#[from] tokio_rustls::rustls::Error),
+    #[error("Client verifier construction failed: {0}")]
+    ClientVerifierBuilderError(#[from] VerifierBuilderError),
+}
+
+
+async fn build_tls_acceptor(settings: &Settings, state: Arc<RwLock<State>>) -> Result<Option<TlsAcceptor>, ServerTLSConfigError> {
+    if settings.listener.is_some() {
+        let state = state.read().await;
+        let config = ServerConfig::builder();
+
+        let config = if let Some(ref roots) = state.root_store {
+            config.with_client_cert_verifier(
+                // TODO: support unauthenticated.
+                WebPkiClientVerifier::builder(roots.clone())
+                .build()?
+            )
+        } else {
+            config.with_no_client_auth()
+        };
+
+
+        if let Some(ref server_certs) = state.server_certificates {
+            Ok(Some(TlsAcceptor::from(Arc::new(config.with_single_cert(
+                server_certs.cert_chain.clone(),
+                server_certs.private_key.clone_key()
+            )?))))
+        } else {
+            Ok(None)
+        }
+    } else {
+        Ok(None)
+    }
+}
+
 pub async fn start(
     settings: Arc<Settings>,
     state: Arc<RwLock<State>>,
     listener: tokio::net::TcpListener
 ) -> anyhow::Result<()> {
-    // TODO: construct a TLS acceptor based on the settings for the server side.
-    let tls_acceptor: Option<TlsAcceptor> = None;
+    let tls_acceptor: Option<TlsAcceptor> = build_tls_acceptor(&settings, state.clone()).await?;
 
     loop {
         let (socket, addr) = listener.accept().await?;
