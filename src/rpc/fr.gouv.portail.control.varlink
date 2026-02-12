@@ -1,0 +1,3 @@
+interface fr.gouv.portail.control
+
+method Ping(ping: string) -> (pong: string)
