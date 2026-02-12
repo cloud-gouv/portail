@@ -5,9 +5,11 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.100"
+asn1 = "0.23.1"
 bytes = "1.11.0"
 chrono = "0.4.43"
 clap = { version = "4.5.57", features = ["derive", "string"] }
+cryptoki = "0.12.0"
 fast-socks5 = "1.0.0"
 hyper = { version = "1.8.1", features = ["full"] }
 nix = { version = "0.31.1", features = ["socket", "uio", "net"] }
@@ -26,3 +28,4 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 varlink = { version = "13.0.0", features = ["tokio"] }
 winnow = "0.7.14"
+x509-certificate = "0.25.0"

@@ -29,7 +29,9 @@ pub struct EscapeSettings {
     pub cacert_file: Option<PathBuf>,
     pub tls_privkey: Option<PathBuf>,
     pub tls_certificate: Option<PathBuf>,
-    pub pkcs11_uri: Option<String>,
+
+    /// If set, PKCS#11 is used to resolve client certificates automatically.
+    pub pkcs11_library: Option<PathBuf>,
 }
 
 #[serde_with::serde_as]

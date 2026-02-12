@@ -14,6 +14,7 @@ mod proxy;
 mod rpc;
 mod state;
 mod systemd;
+mod pkcs11;
 
 #[derive(Parser)]
 #[command(name = "Portail")]
