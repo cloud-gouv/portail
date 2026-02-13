@@ -9,7 +9,7 @@ enum ProxyProtocol {
     Socks5,
     Http1,
     Http2,
-    Http3
+    Http3,
 }
 
 pub struct TargetContext {
@@ -17,9 +17,10 @@ pub struct TargetContext {
     pub resolved_target: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct RequestContext {
     pub client_address: SocketAddr,
-    pub acl_eval_ctx: crate::acl::EvalContext
+    pub acl_eval_ctx: crate::acl::EvalContext,
 }
 
 impl RequestContext {
