@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::os::fd::FromRawFd;
 use std::{path::PathBuf, sync::Arc};
@@ -60,7 +60,9 @@ async fn main() -> Result<()> {
         } => {
             let settings: Arc<config::Settings> = Arc::new(config::init(&config));
 
-            let state: Arc<RwLock<state::State>> = Arc::new(RwLock::new(state::init(&settings)));
+            let state: Arc<RwLock<state::State>> = Arc::new(RwLock::new(
+                    state::init(&settings).context("While initializing application state")?
+            ));
 
             let fds_named = systemd::listen_fds_named();
 
