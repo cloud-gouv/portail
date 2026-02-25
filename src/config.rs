@@ -53,6 +53,9 @@ pub struct Settings {
     #[serde(default)]
     pub tcp_nodelay: bool,
 
+    /// Whether to set a default upstream.
+    pub default_backend: Option<String>,
+
     /// List of backends to which we can route proxy queries.
     #[serde(default)]
     pub backends: HashMap<String, BackendSettings>,

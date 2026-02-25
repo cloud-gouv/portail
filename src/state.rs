@@ -30,7 +30,7 @@ pub struct Statistics {
 
 pub fn init(settings: &Settings) -> State {
     State {
-        default_backend: None,
+        default_backend: settings.default_backend.clone(),
         acl_rules: crate::acl::load_rules_from_file(&settings.filter_acl_rules_path.clone().unwrap()).unwrap(),
         root_store: None,
         client_cert_resolver: None
