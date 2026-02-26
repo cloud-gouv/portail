@@ -3,7 +3,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
-    - uses: samueldr/lix-gha-installer-action@f526e761e1ad201b0f4231f61a2a569f17bcc2ac # main
+    - uses: samueldr/lix-gha-installer-action@7b7f14d320d6aacfb65bd1ef761566b3b69e474c # main
     - name: Build package
       run: nix-build ./nix -A package -I nixpkgs=channel:nixos-unstable
     - name: Build tests
