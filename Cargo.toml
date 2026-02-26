@@ -19,7 +19,7 @@ serde_with = { version = "3.16.1", features = ["chrono"] }
 thiserror = "2.0.18"
 tokio = { version = "1.49.0", features = ["full"] }
 tokio-rustls = "0.26.4"
-toml = "0.9.11"
+toml = "1.0.0"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 varlink = { version = "13.0.0", features = ["tokio"] }
