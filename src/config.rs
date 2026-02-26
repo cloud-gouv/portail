@@ -29,7 +29,9 @@ pub struct EscapeSettings {
     pub cacert_file: Option<PathBuf>,
     pub tls_privkey: Option<PathBuf>,
     pub tls_certificate: Option<PathBuf>,
-    pub pkcs11_uri: Option<String>,
+
+    /// If set, PKCS#11 is used to resolve client certificates automatically.
+    pub pkcs11_library: Option<PathBuf>,
 }
 
 #[serde_with::serde_as]
@@ -62,7 +64,10 @@ pub struct Settings {
 
     /// Settings for the workload socket (e.g. this is where clients connect to, e.g. Firefox or
     /// another instance of this proxy via routing)
+    /// If this is unset, there's no TLS on incoming connections.
+    /// Use this when you are binding a local daemon.
     pub listener: Option<ListenSettings>,
+
     /// Settings for connecting to other proxy instances or websites via client certificate
     /// authentication.
     pub escaper: Option<EscapeSettings>,
