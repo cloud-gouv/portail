@@ -5,28 +5,27 @@ use crate::{
 };
 use bytes::Bytes;
 use http_body_util::{BodyExt, Empty, combinators::BoxBody};
-use httparse;
 use hyper::{
-    Method, Request, Response, StatusCode, body::Incoming, header::HeaderValue,
-    server::conn::http1, service::service_fn,
+    Method, Request, Response, StatusCode,
+    body::Incoming,
+    header::{self, HeaderValue},
+    server::conn::http1,
+    service::service_fn,
 };
 use hyper_util::rt::TokioIo;
 use std::io;
 use std::sync::Arc;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
 use tokio_rustls::rustls::pki_types::ServerName;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 /// This is a workaround for the restriction `only auto traits can be used as additional traits in a trait object`
 trait OutboundStreamIo: AsyncRead + AsyncWrite {}
 impl<T: AsyncRead + AsyncWrite> OutboundStreamIo for T {}
 
 type OutboundStream = Box<dyn OutboundStreamIo + Send + Unpin>;
-
-const CONNECT_HEADERS_MAX_SIZE: usize = 8192;
-const CONNECT_HEADERS_MAX_COUNT: usize = 32;
 
 /// References:
 /// - https://docs.rs/hyper/latest/hyper/upgrade/index.html
@@ -190,6 +189,7 @@ fn empty_body() -> BoxBody<Bytes, hyper::Error> {
 }
 
 /// Send CONNECT and return the stream on 2xx response
+/// Ref: https://github.com/hyperium/hyper/blob/master/examples/client.rs
 async fn connect_to_http_proxy_backend(
     backend: &BackendSettings,
     final_address: &str,
@@ -197,7 +197,7 @@ async fn connect_to_http_proxy_backend(
 ) -> io::Result<OutboundStream> {
     let socket = TcpStream::connect(backend.target_address).await?;
 
-    let mut stream: OutboundStream = if backend.identity_aware {
+    let stream: OutboundStream = if backend.identity_aware {
         debug!(
             "Backend is identity-aware, establishing a TLS connection to {}",
             backend.target_address
@@ -211,55 +211,53 @@ async fn connect_to_http_proxy_backend(
         Box::new(socket)
     };
 
-    let request = format!(
-        "CONNECT {} HTTP/1.1\r\nHost: {}\r\n\r\n",
-        final_address, final_address
-    );
-    stream.write_all(request.as_bytes()).await?;
-    stream.flush().await?;
+    let io = TokioIo::new(stream);
 
-    // Most HTTP CONNECT responses should be under 512 bytes
-    let mut buf = Vec::with_capacity(512);
-    let mut one = [0u8; 1];
-    loop {
-        let n = stream.read(&mut one).await?;
-        if n == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "HTTP proxy closed connection before response",
-            ));
-        }
-        buf.push(one[0]);
-        if buf.ends_with(b"\r\n\r\n") {
-            break;
-        }
-        if buf.len() > CONNECT_HEADERS_MAX_SIZE {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "HTTP proxy response headers too large",
-            ));
-        }
-    }
+    let (mut sender, conn) = hyper::client::conn::http1::Builder::new()
+        .handshake(io)
+        .await
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
-    let mut headers = [httparse::EMPTY_HEADER; CONNECT_HEADERS_MAX_COUNT];
-    let mut response = httparse::Response::new(&mut headers);
-    response
-        .parse(&buf)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    // We must await the connection (and enable upgrades)
+    // https://docs.rs/hyper/latest/hyper/client/conn/http1/struct.Builder.html#method.handshake
+    tokio::spawn(async move {
+        if let Err(e) = conn.with_upgrades().await {
+            warn!("Cannot HTTP CONNECT to upstream: {}", e);
+        }
+    });
 
-    let code = response
-        .code
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Empty HTTP proxy response"))?;
-    if !(200..300).contains(&code) {
-        let reason = response.reason.unwrap_or("");
+    // The following points are important for choosing the current implementation of the CONNECT:
+    // 1. hyper has optimized the way it parses headers:
+    //    https://github.com/hyperium/hyper/blob/72ebcffb7d82cda15aa74507b2cc522ca2a7a94d/src/proto/h1/role.rs#L113
+    // 2. hyper treats CONNECT as having no body, so it will not read more than the headers:
+    //    https://github.com/hyperium/hyper/blob/72ebcffb7d82cda15aa74507b2cc522ca2a7a94d/src/proto/h1/role.rs#L1233
+    let request = Request::builder()
+        .method(Method::CONNECT)
+        .uri(final_address)
+        .header(header::HOST, final_address)
+        .body(Empty::<Bytes>::new())
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+    let mut response = sender
+        .send_request(request)
+        .await
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+    if !response.status().is_success() {
         return Err(io::Error::new(
             io::ErrorKind::ConnectionRefused,
             format!(
-                "HTTP proxy CONNECT failed with status code {}: {}",
-                code, reason
+                "HTTP proxy CONNECT failed with status {}",
+                response.status()
             ),
         ));
     }
+
+    let upgraded = hyper::upgrade::on(&mut response)
+        .await
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+    let stream: OutboundStream = Box::new(TokioIo::new(upgraded));
 
     Ok(stream)
 }

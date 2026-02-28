@@ -785,7 +785,6 @@ dependencies = [
  "fast-socks5",
  "http",
  "http-body-util",
- "httparse",
  "hyper",
  "hyper-util",
  "nix",
