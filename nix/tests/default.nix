@@ -27,6 +27,11 @@ let
       443
     ];
   };
+  portailEnv = {
+    systemd.services.portail.environment = {
+      RUST_LOG = "portail=debug";
+    };
+  };
 in
 {
   exit-node = pkgs.testers.nixosTest {
@@ -52,7 +57,7 @@ in
             ".* -> deny"
           ];
         };
-      };
+      } // portailEnv;
     };
     testScript = ''
       import json
@@ -86,6 +91,14 @@ in
         "curl --fail --socks5-hostname 127.0.0.1:8080 http://hello.corp.example.com"
       ))
       assert result['service'] == 'hello.corp' and result['remote_addr'] == self_ip, "Unexpected result from the web service: {}".format(json.dumps(result))
+
+      # Test HTTP CONNECT
+      # --proxytunnel will force HTTP CONNECT
+      result = json.loads(node.succeed(
+        "curl --fail --proxytunnel --proxy http://127.0.0.1:8080 http://hello.corp.example.com"
+      ))
+      assert result['service'] == 'hello.corp' and result['remote_addr'] == self_ip, "Unexpected result from the web service: {}".format(json.dumps(result))
+
       # TODO: Test HTTPS as well.
 
       # This exercises rejections and ACLs.
@@ -145,7 +158,7 @@ in
             "hello.corp.example.com -> allow"
           ];
         };
-      };
+      } // portailEnv;
     };
     testScript = ''
       import json
@@ -183,6 +196,101 @@ in
         "curl --fail --socks5-hostname 127.0.0.1:8080 http://hello.corp.example.com"
       ))
       assert result['service'] == 'hello.corp' and result['remote_addr'] != self_ip, "Unexpected result from the web service: {}".format(json.dumps(result))
+    '';
+  };
+
+  # curl -> portail -> portail (hop) -> corp-server
+  chaining = pkgs.testers.nixosTest {
+    name = "chaining";
+    nodes = {
+      corp-server = mkServiceNode { };
+
+      portail-hop = { nodes, ... }: {
+        imports = [ ../module.nix ];
+
+        networking.interfaces.eth1.ipv4.addresses = [
+          {
+            address = "192.168.1.60";
+            prefixLength = 24;
+          }
+        ];
+
+        networking.hosts."${nodes.corp-server.networking.primaryIPAddress}" =
+          [ "hello.corp.example.com" "bad.corp.example.com" ];
+
+        networking.firewall.allowedTCPPorts = [ 8080 ];
+
+        services.portail = {
+          enable = true;
+          enableAtBoot = true;
+          proxyListenStream = "0.0.0.0:8080";
+          acl.filter.rules = [
+            "hello.corp.example.com -> allow"
+          ];
+        };
+      } // portailEnv;
+
+      node = { nodes, ... }: {
+        imports = [ ../module.nix ];
+
+        networking.interfaces.eth1.ipv4.addresses = [
+          {
+            address = "192.168.1.100";
+            prefixLength = 24;
+          }
+        ];
+
+        networking.hosts."${nodes.corp-server.networking.primaryIPAddress}" =
+          [ "hello.corp.example.com" "bad.corp.example.com" ];
+
+        services.portail = {
+          enable = true;
+          enableAtBoot = true;
+
+          settings = {
+            default-backend = "default";
+            backends.default = {
+              # portail -> portail (hop)
+              target-address =
+                "${nodes.portail-hop.networking.primaryIPAddress}:8080";
+            };
+          };
+
+          acl.filter.rules = [
+            "hello.corp.example.com -> allow"
+          ];
+        };
+      } // portailEnv;
+    };
+
+    testScript = ''
+      import json
+
+      start_all()
+
+      node.wait_for_unit("multi-user.target")
+      node.wait_for_unit("portail.service")
+
+      portail_hop.wait_for_unit("multi-user.target")
+      portail_hop.wait_for_unit("portail.service")
+
+      corp_server.wait_for_unit("multi-user.target")
+      corp_server.wait_for_open_port(80)
+
+      node.wait_for_open_port(8080)
+      portail_hop.wait_for_open_port(8080)
+
+      self_ip = "192.168.1.100"
+
+      # Test HTTP CONNECT curl -> portail -> portail (hop) -> corp-server
+      result = json.loads(node.succeed(
+        "curl --fail --proxytunnel --proxy http://127.0.0.1:8080 http://hello.corp.example.com"
+      ))
+
+      assert (
+        result['service'] == 'hello.corp'
+        and result['remote_addr'] != self_ip
+      ), "Unexpected result from the web service: {}".format(json.dumps(result))
     '';
   };
 
