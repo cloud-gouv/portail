@@ -1,23 +1,23 @@
-use std::sync::Arc;
 use anyhow::bail;
-use thiserror::Error;
 use fast_socks5::SocksError;
+use std::sync::Arc;
+use thiserror::Error;
 use tokio::sync::RwLock;
-use tracing::error;
 use tokio_rustls::{TlsAcceptor, TlsStream};
+use tracing::error;
 
 use crate::{config::Settings, proxy::context::RequestContext, state::State};
 
-mod context;
 mod client_tls;
+mod context;
+mod http_connect;
 mod protocol_detect;
 mod socks5;
-mod http_connect;
 
 use context::InboundStream;
-use socks5::serve_socks5;
 use http_connect::serve_http_connect;
 use protocol_detect::{DetectedProtocol, detect_protocol, detect_tls};
+use socks5::serve_socks5;
 
 #[derive(Debug, Error)]
 enum ProxyError {
@@ -39,7 +39,7 @@ async fn serve_authenticated_proxy(
     if let InboundStream::TlsStream(stream) = stream {
         match proto {
             DetectedProtocol::Socks5 => serve_socks5(settings, state, ctx, stream).await?,
-            DetectedProtocol::Http => serve_http_connect(settings, state, stream).await?,
+            DetectedProtocol::Http => serve_http_connect(settings, state, ctx, stream).await?,
             DetectedProtocol::Unknown => bail!("Unknown protocol"),
         }
     }
@@ -51,13 +51,13 @@ async fn serve_unauthenticated_proxy(
     settings: Arc<Settings>,
     state: Arc<RwLock<State>>,
     ctx: RequestContext,
-    stream: tokio::net::TcpStream
+    stream: tokio::net::TcpStream,
 ) -> anyhow::Result<()> {
     let (proto, stream) = detect_protocol(InboundStream::TcpStream(stream)).await?;
     if let InboundStream::TcpStream(stream) = stream {
         match proto {
             DetectedProtocol::Socks5 => serve_socks5(settings, state, ctx, stream).await?,
-            DetectedProtocol::Http => serve_http_connect(settings, state, stream).await?,
+            DetectedProtocol::Http => serve_http_connect(settings, state, ctx, stream).await?,
             DetectedProtocol::Unknown => bail!("Unknown protocol"),
         }
     }
@@ -68,7 +68,7 @@ async fn serve_unauthenticated_proxy(
 pub async fn start(
     settings: Arc<Settings>,
     state: Arc<RwLock<State>>,
-    listener: tokio::net::TcpListener
+    listener: tokio::net::TcpListener,
 ) -> anyhow::Result<()> {
     // TODO: construct a TLS acceptor based on the settings for the server side.
     let tls_acceptor: Option<TlsAcceptor> = None;
@@ -87,8 +87,13 @@ pub async fn start(
                     if let Some(acceptor) = acceptor {
                         match acceptor.accept(socket).await {
                             Ok(tls_stream) => {
-                                if let Err(e) =
-                                    serve_authenticated_proxy(settings, state, ctx, TlsStream::Server(tls_stream)).await
+                                if let Err(e) = serve_authenticated_proxy(
+                                    settings,
+                                    state,
+                                    ctx,
+                                    TlsStream::Server(tls_stream),
+                                )
+                                .await
                                 {
                                     error!("TLS proxy error from {addr}: {e:?}");
                                 }
@@ -98,7 +103,9 @@ pub async fn start(
                             }
                         }
                     } else {
-                        error!("TLS received from {addr}: but no TLS configuration set in the proxy");
+                        error!(
+                            "TLS received from {addr}: but no TLS configuration set in the proxy"
+                        );
                     }
                 }
 
@@ -110,7 +117,9 @@ pub async fn start(
                 }
 
                 Err(err) => {
-                    error!("While detecting the header for TLS from {addr}, error occurred: {err:?}");
+                    error!(
+                        "While detecting the header for TLS from {addr}, error occurred: {err:?}"
+                    );
                 }
             }
         });
