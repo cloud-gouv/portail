@@ -150,7 +150,7 @@ async fn handle_http_request(
         );
         match TcpStream::connect(&final_address).await {
             Ok(socket) => stream = Some(Box::new(socket)),
-            Err(e) => debug!("Direct connection to `{}` failed: {}", final_address, e),
+            Err(e) => warn!("Direct connection to `{}` failed: {}", final_address, e),
         }
     }
 
@@ -165,7 +165,7 @@ async fn handle_http_request(
             Ok(upgraded) => {
                 let mut client = TokioIo::new(upgraded);
                 if let Err(e) = tokio::io::copy_bidirectional(&mut client, &mut *stream).await {
-                    debug!("CONNECT tunnel error: {}", e);
+                    error!("CONNECT tunnel error: {}", e);
                 }
             }
             Err(e) => debug!("CONNECT upgrade error: {}", e),

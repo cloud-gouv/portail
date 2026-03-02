@@ -39,7 +39,7 @@ in
     nodes = {
       corp-server = mkServiceNode { };
       node = { nodes, ... }: {
-        imports = [ ../module.nix ];
+        imports = [ ../module.nix portailEnv ];
 
         networking.hosts."${nodes.corp-server.networking.primaryIPAddress}" = [ "hello.corp.example.com" "bad.corp.example.com" ];
 
@@ -57,7 +57,7 @@ in
             ".* -> deny"
           ];
         };
-      } // portailEnv;
+      };
     };
     testScript = ''
       import json
@@ -137,7 +137,7 @@ in
       };
       corp-server = mkServiceNode { };
       node = { nodes, ... }: { 
-        imports = [ ../module.nix ];
+        imports = [ ../module.nix portailEnv ];
         networking.hosts."${nodes.corp-server.networking.primaryIPAddress}" = [ "hello.corp.example.com" "bad.corp.example.com" ];
         networking.interfaces.eth1.ipv4.addresses = [
           {
@@ -158,7 +158,7 @@ in
             "hello.corp.example.com -> allow"
           ];
         };
-      } // portailEnv;
+      };
     };
     testScript = ''
       import json
@@ -200,13 +200,13 @@ in
   };
 
   # curl -> portail -> portail (hop) -> corp-server
-  chaining = pkgs.testers.nixosTest {
-    name = "chaining";
+  portail-upstream = pkgs.testers.nixosTest {
+    name = "portail-upstream";
     nodes = {
       corp-server = mkServiceNode { };
 
       portail-hop = { nodes, ... }: {
-        imports = [ ../module.nix ];
+        imports = [ ../module.nix portailEnv ];
 
         networking.interfaces.eth1.ipv4.addresses = [
           {
@@ -228,10 +228,10 @@ in
             "hello.corp.example.com -> allow"
           ];
         };
-      } // portailEnv;
+      };
 
       node = { nodes, ... }: {
-        imports = [ ../module.nix ];
+        imports = [ ../module.nix portailEnv ];
 
         networking.interfaces.eth1.ipv4.addresses = [
           {
@@ -260,7 +260,7 @@ in
             "hello.corp.example.com -> allow"
           ];
         };
-      } // portailEnv;
+      };
     };
 
     testScript = ''
