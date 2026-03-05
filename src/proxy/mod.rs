@@ -3,8 +3,14 @@ use fast_socks5::SocksError;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
+use tokio_rustls::{
+    TlsAcceptor, TlsStream,
+    rustls::{
+        ServerConfig,
+        server::{VerifierBuilderError, WebPkiClientVerifier},
+    },
+};
 use tracing::error;
-use tokio_rustls::{TlsAcceptor, TlsStream, rustls::{ServerConfig, server::{VerifierBuilderError, WebPkiClientVerifier}}};
 
 use crate::{config::Settings, proxy::context::RequestContext, state::State};
 
@@ -15,7 +21,7 @@ mod protocol_detect;
 mod socks5;
 
 use context::InboundStream;
-use http_connect::serve_http_connect;
+use http_connect::{serve_http1_connect, serve_http2_connect};
 use protocol_detect::{DetectedProtocol, detect_protocol, detect_tls};
 use socks5::serve_socks5;
 
@@ -34,12 +40,14 @@ async fn serve_authenticated_proxy(
     stream: TlsStream<tokio::net::TcpStream>,
 ) -> anyhow::Result<()> {
     // TODO: extract context
+
     let (proto, stream) = detect_protocol(InboundStream::TlsStream(stream)).await?;
 
     if let InboundStream::TlsStream(stream) = stream {
         match proto {
             DetectedProtocol::Socks5 => serve_socks5(settings, state, ctx, stream).await?,
-            DetectedProtocol::Http => serve_http_connect(settings, state, ctx, stream).await?,
+            DetectedProtocol::Http1 => serve_http1_connect(settings, state, ctx, stream).await?,
+            DetectedProtocol::Http2 => serve_http2_connect(settings, state, ctx, stream).await?,
             DetectedProtocol::Unknown => bail!("Unknown protocol"),
         }
     }
@@ -57,7 +65,8 @@ async fn serve_unauthenticated_proxy(
     if let InboundStream::TcpStream(stream) = stream {
         match proto {
             DetectedProtocol::Socks5 => serve_socks5(settings, state, ctx, stream).await?,
-            DetectedProtocol::Http => serve_http_connect(settings, state, ctx, stream).await?,
+            DetectedProtocol::Http1 => serve_http1_connect(settings, state, ctx, stream).await?,
+            DetectedProtocol::Http2 => serve_http2_connect(settings, state, ctx, stream).await?,
             DetectedProtocol::Unknown => bail!("Unknown protocol"),
         }
     }
@@ -73,8 +82,10 @@ enum ServerTLSConfigError {
     ClientVerifierBuilderError(#[from] VerifierBuilderError),
 }
 
-
-async fn build_tls_acceptor(settings: &Settings, state: Arc<RwLock<State>>) -> Result<Option<TlsAcceptor>, ServerTLSConfigError> {
+async fn build_tls_acceptor(
+    settings: &Settings,
+    state: Arc<RwLock<State>>,
+) -> Result<Option<TlsAcceptor>, ServerTLSConfigError> {
     if settings.listener.is_some() {
         let state = state.read().await;
         let config = ServerConfig::builder();
@@ -82,19 +93,19 @@ async fn build_tls_acceptor(settings: &Settings, state: Arc<RwLock<State>>) -> R
         let config = if let Some(ref roots) = state.root_store {
             config.with_client_cert_verifier(
                 // TODO: support unauthenticated.
-                WebPkiClientVerifier::builder(roots.clone())
-                .build()?
+                WebPkiClientVerifier::builder(roots.clone()).build()?,
             )
         } else {
             config.with_no_client_auth()
         };
 
-
         if let Some(ref server_certs) = state.server_certificates {
-            Ok(Some(TlsAcceptor::from(Arc::new(config.with_single_cert(
+            let mut config = config.with_single_cert(
                 server_certs.cert_chain.clone(),
-                server_certs.private_key.clone_key()
-            )?))))
+                server_certs.private_key.clone_key(),
+            )?;
+            config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+            Ok(Some(TlsAcceptor::from(Arc::new(config))))
         } else {
             Ok(None)
         }

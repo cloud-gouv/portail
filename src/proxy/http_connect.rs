@@ -9,10 +9,10 @@ use hyper::{
     Method, Request, Response, StatusCode,
     body::Incoming,
     header::{self, HeaderValue},
-    server::conn::http1,
+    server::conn::{http1, http2},
     service::service_fn,
 };
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioExecutor, TokioIo};
 use std::io;
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -31,7 +31,7 @@ type OutboundStream = Box<dyn OutboundStreamIo + Send + Unpin>;
 /// - https://docs.rs/hyper/latest/hyper/upgrade/index.html
 /// - https://github.com/hyperium/hyper/blob/master/examples/http_proxy.rs
 /// - https://github.com/hyperium/hyper/blob/master/examples/upgrades.rs
-pub async fn serve_http_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
+pub async fn serve_http1_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     settings: Arc<Settings>,
     state: Arc<RwLock<State>>,
     ctx: RequestContext,
@@ -49,6 +49,32 @@ pub async fn serve_http_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'stat
             }),
         )
         .with_upgrades()
+        .await
+        .map_err(|e| ProxyError::HTTPConnectError(e.to_string()))?;
+
+    Ok(())
+}
+
+pub async fn serve_http2_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
+    settings: Arc<Settings>,
+    state: Arc<RwLock<State>>,
+    ctx: RequestContext,
+    stream: S,
+) -> Result<(), ProxyError> {
+    let io = TokioIo::new(stream);
+
+    // TODO: update ctx
+
+    // TokioExecutor is a wrapper around tokio::spawn
+    // https://docs.rs/hyper-util/latest/src/hyper_util/rt/tokio.rs.html#112
+    http2::Builder::new(TokioExecutor::new())
+        .enable_connect_protocol()
+        .serve_connection(
+            io,
+            service_fn(move |req| {
+                handle_http_request(req, ctx.clone(), settings.clone(), state.clone())
+            }),
+        )
         .await
         .map_err(|e| ProxyError::HTTPConnectError(e.to_string()))?;
 
