@@ -1,14 +1,35 @@
 { pkgs, ... }:
 let
-  # Import nixpkgs snakeoil certs.
+  certs = import ./certs/snakeoil-certs.nix;
+  portailDomain = certs.proxyCerts.proxyDomain;
+  helloDomain = certs.workloadCerts.workloadDomain;
+
   mkVirtualHost = svcName: {
     extraConfig = ''
       location / {
         default_type application/json;
-        return 200 '{"remote_addr":"$remote_addr","service": "${svcName}"}';
+        return 200 '{"remote_addr":"$remote_addr","service": "${svcName}","tls":false}';
       }
     '';
   };
+
+  mkVirtualHostWithTLS = svcName: certs: {
+    sslCertificate = certs.cert;
+    sslCertificateKey = certs.key;
+    addSSL = true;
+
+    extraConfig = ''
+      location / {
+        default_type application/json;
+        set $tls_flag false;
+        if ($ssl_protocol) {
+          set $tls_flag true;
+        }
+        return 200 '{"remote_addr":"$remote_addr","service":"${svcName}","tls":$tls_flag}';
+      }
+    '';
+  };
+
   mkServiceNode = {}: {
       networking.interfaces.eth1.ipv4.addresses = [
         {
@@ -19,7 +40,7 @@ let
 
     services.nginx = {
       enable = true;
-      virtualHosts."hello.corp.example.com" = mkVirtualHost "hello.corp";
+      virtualHosts."${helloDomain}" = mkVirtualHostWithTLS "hello.corp" certs.workloadCerts.${helloDomain};
       virtualHosts."bad.corp.example.com" = mkVirtualHost "bad.corp";
     };
     networking.firewall.allowedTCPPorts = [
@@ -42,6 +63,7 @@ in
         imports = [ ../module.nix portailEnv ];
 
         networking.hosts."${nodes.corp-server.networking.primaryIPAddress}" = [ "hello.corp.example.com" "bad.corp.example.com" ];
+        networking.hosts."192.168.1.100" = [ portailDomain ];
 
         networking.interfaces.eth1.ipv4.addresses = [
           {
@@ -49,9 +71,24 @@ in
             prefixLength = 24;
           }
         ];
+
+        networking.firewall.allowedTCPPorts = [ 8080 ];
+
+        security.pki.certificates = [
+          # Trust the proxy TLS
+          (builtins.readFile certs.proxyCerts.ca.cert)
+          # Trust the workload TLS
+          (builtins.readFile certs.workloadCerts.ca.cert)
+        ];
         services.portail = {
           enable = true;
           enableAtBoot = true;
+          proxyListenStream = "0.0.0.0:8080";
+          settings.listener = {
+            tls-privkey = certs.proxyCerts.${portailDomain}.key;
+            # NOTE: we already possess part of the chain in the local trust store.
+            tls-chain = certs.proxyCerts.${portailDomain}.cert;
+          };
           acl.filter.rules = [
             "hello.corp.example.com -> allow"
             ".* -> deny"
@@ -74,7 +111,7 @@ in
 
       # Wait for NGINX to be ready.
       corp_server.wait_for_open_port(80)
-      # corp_server.wait_for_open_port(443)
+      corp_server.wait_for_open_port(443)
 
       # Wait for the SOCK5 server to be ready.
       node.wait_for_open_port(8080)
@@ -86,20 +123,40 @@ in
         "curl --fail --socks5 127.0.0.1:8080 http://hello.corp.example.com"
       ))
       assert result['service'] == 'hello.corp' and result['remote_addr'] == self_ip, "Unexpected result from the web service: {}".format(json.dumps(result))
+
       # This exercise the SOCKS5 DNS resolution.
       result = json.loads(node.succeed(
         "curl --fail --socks5-hostname 127.0.0.1:8080 http://hello.corp.example.com"
       ))
       assert result['service'] == 'hello.corp' and result['remote_addr'] == self_ip, "Unexpected result from the web service: {}".format(json.dumps(result))
 
+      # TODO: test downstream TLS via SOCKS5.
+
       # Test HTTP CONNECT
       # --proxytunnel will force HTTP CONNECT
       result = json.loads(node.succeed(
         "curl --fail --proxytunnel --proxy http://127.0.0.1:8080 http://hello.corp.example.com"
       ))
-      assert result['service'] == 'hello.corp' and result['remote_addr'] == self_ip, "Unexpected result from the web service: {}".format(json.dumps(result))
+      assert result['service'] == 'hello.corp' and result['remote_addr'] == self_ip and not result['tls'], "Unexpected result from the web service: {}".format(json.dumps(result))
+      result = json.loads(node.succeed(
+        "curl --fail --proxytunnel --proxy http://127.0.0.1:8080 https://hello.corp.example.com"
+      ))
+      assert result['service'] == 'hello.corp' and result['remote_addr'] == self_ip and result['tls'], "Unexpected result from the web service: {}".format(json.dumps(result))
 
-      # TODO: Test HTTPS as well.
+      # Test HTTPS CONNECT
+      # --proxytunnel will force HTTPS CONNECT
+      result = json.loads(node.succeed(
+        "curl --fail --proxytunnel --proxy https://${portailDomain}:8080 http://hello.corp.example.com"
+      )) 
+      assert result['service'] == 'hello.corp' and result['remote_addr'] == self_ip and not result['tls'], "Unexpected result from the web service: {}".format(json.dumps(result))
+
+      # FIXME: TLS over TLS is not cleaning up properly the tunnel.
+      # node # [   15.560560] portail[623]: 2026-03-05T00:43:56.909060Z ERROR portail::proxy::http_connect: CONNECT tunnel error: peer closed connection without sending TLS close_notify: https://docs.rs/rustls/latest/rustls/manual/_03_howto/index.html#unexpected-eof
+      # The curl succeeds but the next assertion fails.
+      result = json.loads(node.succeed(
+        "curl --fail --proxytunnel --proxy https://${portailDomain}:8080 https://hello.corp.example.com"
+      )) 
+      assert result['service'] == 'hello.corp' and result['remote_addr'] == self_ip and result['tls'], "Unexpected result from the web service: {}".format(json.dumps(result))
 
       # This exercises rejections and ACLs.
       # TODO: once ACLs are stabilized, uncomment.
