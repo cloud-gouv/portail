@@ -305,6 +305,7 @@ in
           settings = {
             default-backend = "default";
             backends.default = {
+              type = "direct";
               target-address = "192.168.1.50:8080";
             };
           };
@@ -394,6 +395,7 @@ in
           settings = {
             default-backend = "default";
             backends.default = {
+              type = "direct";
               # portail -> portail (hop)
               target-address =
                 "${nodes.portail-hop.networking.primaryIPAddress}:8080";
@@ -479,11 +481,15 @@ in
             default-backend = "alpha";
             backends = {
               alpha = {
+                type = "direct";
                 target-address =
                   "${nodes.portail-alpha.networking.primaryIPAddress}:8080";
               };
 
-              beta.target-address = "${nodes.microsocks-beta.networking.primaryIPAddress}:8080";
+              beta = {
+                type = "direct";
+                target-address = "${nodes.microsocks-beta.networking.primaryIPAddress}:8080";
+              };
             };
           };
 

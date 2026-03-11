@@ -490,13 +490,11 @@ mod tests {
     fn test_route_evaluation() {
         use crate::acl::hir::{ACLHir, RouteDefinition};
 
-        let backend1 = BackendSettings {
+        let backend1 = BackendSettings::Direct {
             target_address: "1.1.1.1:443".parse().unwrap(),
-            identity_aware: false,
         };
-        let backend2 = BackendSettings {
+        let backend2 = BackendSettings::Direct {
             target_address: "1.1.1.2:443".parse().unwrap(),
-            identity_aware: false,
         };
 
         let hir = ACLHir {
