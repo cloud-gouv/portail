@@ -1,15 +1,50 @@
-use std::{collections::HashMap, net::SocketAddr, path::{Path, PathBuf}};
 use chrono::Duration;
+use std::{
+    collections::HashMap,
+    fmt::Display,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
 
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub struct BackendSettings {
-    pub target_address: SocketAddr,
-    /// Whether this backend requires a TLS connection with a client certificate.
-    #[serde(default)]
-    pub identity_aware: bool
+#[serde(rename_all = "kebab-case", tag = "type")]
+pub enum BackendSettings {
+    /// For identity-aware proxies (i.e. TLS with client certificates)
+    IdentityAware { target_address: SocketAddr },
+
+    /// For proxies behind SSH
+    SSH {
+        target_address: SocketAddr,
+        proxy_address: SocketAddr,
+    },
+
+    /// For direct proxy without any specific identity awareness (i.e. no TLS with client
+    /// certificates)
+    #[serde(untagged)]
+    Direct { target_address: SocketAddr },
+}
+
+impl Display for BackendSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::IdentityAware { target_address } => f.write_fmt(format_args!(
+                "<identity-aware direct backend to {}>",
+                target_address
+            )),
+            Self::Direct { target_address } => {
+                f.write_fmt(format_args!("<direct backend to {}>", target_address))
+            }
+            Self::SSH {
+                target_address,
+                proxy_address,
+            } => f.write_fmt(format_args!(
+                "<backend {} over SSH to {}>",
+                proxy_address, target_address
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -72,5 +107,6 @@ pub struct Settings {
 }
 
 pub fn init(config_path: &Path) -> Settings {
-    toml::from_slice(&std::fs::read(config_path).expect("Failed to read config file")).expect("Failed to parse config file")
+    toml::from_slice(&std::fs::read(config_path).expect("Failed to read config file"))
+        .expect("Failed to parse config file")
 }

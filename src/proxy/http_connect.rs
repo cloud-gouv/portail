@@ -1,16 +1,16 @@
 use crate::{
     config::{BackendSettings, Settings},
-    proxy::{ProxyError, client_tls, context::RequestContext},
+    proxy::{client_tls, context::RequestContext, ProxyError},
     state::State,
 };
 use bytes::Bytes;
-use http_body_util::{BodyExt, Empty, combinators::BoxBody};
+use http_body_util::{combinators::BoxBody, BodyExt, Empty};
 use hyper::{
-    Method, Request, Response, StatusCode,
     body::Incoming,
     header::{self, HeaderValue},
     server::conn::http1,
     service::service_fn,
+    Method, Request, Response, StatusCode,
 };
 use hyper_util::rt::TokioIo;
 use std::io;
@@ -128,7 +128,7 @@ async fn handle_http_request(
         };
         debug!(
             "Backend {} selected for HTTP CONNECT to {}",
-            backend.target_address, final_address
+            backend, final_address
         );
         match connect_to_http_proxy_backend(backend, &final_address, state.clone()).await {
             Ok(upstream) => {
@@ -138,7 +138,7 @@ async fn handle_http_request(
             Err(err) => {
                 debug!(
                     "Backend {} failed for HTTP CONNECT: {}, trying next",
-                    backend.target_address, err
+                    backend, err
                 );
             }
         }
@@ -195,20 +195,31 @@ async fn connect_to_http_proxy_backend(
     final_address: &str,
     state: Arc<RwLock<State>>,
 ) -> io::Result<OutboundStream> {
-    let socket = TcpStream::connect(backend.target_address).await?;
-
-    let stream: OutboundStream = if backend.identity_aware {
-        debug!(
-            "Backend is identity-aware, establishing a TLS connection to {}",
-            backend.target_address
-        );
-        let backend_host = backend.target_address.ip().to_string();
-        let domain = ServerName::try_from(backend_host)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-        let tls = client_tls::connect_using_tls_auth(socket, domain, state).await?;
-        Box::new(tls)
-    } else {
-        Box::new(socket)
+    let stream: OutboundStream = match backend {
+        BackendSettings::IdentityAware { target_address } => {
+            let socket = TcpStream::connect(target_address).await?;
+            debug!(
+                "Backend is identity-aware, establishing a TLS connection to {}",
+                target_address
+            );
+            let backend_host = target_address.ip().to_string();
+            let domain = ServerName::try_from(backend_host)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+            let tls = client_tls::connect_using_tls_auth(socket, domain, state).await?;
+            Box::new(tls)
+        }
+        BackendSettings::Direct { target_address } => {
+            let socket = TcpStream::connect(target_address).await?;
+            Box::new(socket)
+        }
+        BackendSettings::SSH {
+            target_address,
+            proxy_address,
+        } => {
+            // FIXME: do ssh rather here.
+            let socket = TcpStream::connect(target_address).await?;
+            Box::new(socket)
+        }
     };
 
     let io = TokioIo::new(stream);
