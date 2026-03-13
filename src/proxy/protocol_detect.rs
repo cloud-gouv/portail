@@ -4,6 +4,9 @@ use crate::proxy::context::InboundStream;
 
 const H2_PREFACE: &[u8; 24] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
+pub const ALPN_H2: &[u8] = b"h2";
+pub const ALPN_HTTP1_1: &[u8] = b"http/1.1";
+
 pub enum DetectedProtocol {
     Socks5,
     Http1,
@@ -42,10 +45,10 @@ pub async fn detect_protocol(
                 let (_io, session) = server_stream.get_ref();
                 if let Some(alpn) = session.alpn_protocol() {
                     let alpn: &[u8] = alpn.as_ref();
-                    if alpn == b"h2" {
+                    if alpn == ALPN_H2 {
                         return Ok((DetectedProtocol::Http2, socket));
                     }
-                    if alpn == b"http/1.1" {
+                    if alpn == ALPN_HTTP1_1 {
                         return Ok((DetectedProtocol::Http1, socket));
                     }
                 }

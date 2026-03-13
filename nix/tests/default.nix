@@ -8,7 +8,7 @@ let
     extraConfig = ''
       location / {
         default_type application/json;
-        return 200 '{"remote_addr":"$remote_addr","service": "${svcName}","tls":false}';
+        return 200 '{"remote_addr":"$remote_addr","service": "${svcName}","tls":false,"protocol":"$server_protocol"}';
       }
     '';
   };
@@ -25,7 +25,7 @@ let
         if ($ssl_protocol) {
           set $tls_flag true;
         }
-        return 200 '{"remote_addr":"$remote_addr","service":"${svcName}","tls":$tls_flag}';
+        return 200 '{"remote_addr":"$remote_addr","service":"${svcName}","tls":$tls_flag,"protocol":"$server_protocol"}';
       }
     '';
   };
@@ -122,13 +122,21 @@ in
       result = json.loads(node.succeed(
         "curl --fail --socks5 127.0.0.1:8080 http://hello.corp.example.com"
       ))
-      assert result['service'] == 'hello.corp' and result['remote_addr'] == self_ip, "Unexpected result from the web service: {}".format(json.dumps(result))
+      assert (
+        result['service'] == 'hello.corp'
+        and result['remote_addr'] == self_ip
+        and result['protocol'] == 'HTTP/1.1'
+      ), "Unexpected result from the web service: {}".format(json.dumps(result))
 
       # This exercise the SOCKS5 DNS resolution.
       result = json.loads(node.succeed(
         "curl --fail --socks5-hostname 127.0.0.1:8080 http://hello.corp.example.com"
       ))
-      assert result['service'] == 'hello.corp' and result['remote_addr'] == self_ip, "Unexpected result from the web service: {}".format(json.dumps(result))
+      assert (
+        result['service'] == 'hello.corp'
+        and result['remote_addr'] == self_ip
+        and result['protocol'] == 'HTTP/1.1'
+      ), "Unexpected result from the web service: {}".format(json.dumps(result))
 
       # TODO: test downstream TLS via SOCKS5.
 
@@ -137,26 +145,81 @@ in
       result = json.loads(node.succeed(
         "curl --fail --proxytunnel --proxy http://127.0.0.1:8080 http://hello.corp.example.com"
       ))
-      assert result['service'] == 'hello.corp' and result['remote_addr'] == self_ip and not result['tls'], "Unexpected result from the web service: {}".format(json.dumps(result))
+      assert (
+        result['service'] == 'hello.corp'
+        and result['remote_addr'] == self_ip
+        and not result['tls']
+        and result['protocol'] == 'HTTP/1.1'
+      ), "Unexpected result from the web service: {}".format(json.dumps(result))
+
+      # No --proxytunnel since curl uses CONNECT by default for HTTPS
       result = json.loads(node.succeed(
-        "curl --fail --proxytunnel --proxy http://127.0.0.1:8080 https://hello.corp.example.com"
+        "curl --fail --proxy http://127.0.0.1:8080 https://hello.corp.example.com"
       ))
-      assert result['service'] == 'hello.corp' and result['remote_addr'] == self_ip and result['tls'], "Unexpected result from the web service: {}".format(json.dumps(result))
+      assert (
+        result['service'] == 'hello.corp'
+        and result['remote_addr'] == self_ip
+        and result['tls']
+        and result['protocol'] == 'HTTP/2.0'
+      ), "Unexpected result from the web service: {}".format(json.dumps(result))
 
       # Test HTTPS CONNECT
       # --proxytunnel will force HTTPS CONNECT
       result = json.loads(node.succeed(
         "curl --fail --proxytunnel --proxy https://${portailDomain}:8080 http://hello.corp.example.com"
-      )) 
-      assert result['service'] == 'hello.corp' and result['remote_addr'] == self_ip and not result['tls'], "Unexpected result from the web service: {}".format(json.dumps(result))
+      ))
+      assert (
+        result['service'] == 'hello.corp'
+        and result['remote_addr'] == self_ip
+        and not result['tls']
+        and result['protocol'] == 'HTTP/1.1'
+      ), "Unexpected result from the web service: {}".format(json.dumps(result))
 
       # FIXME: TLS over TLS is not cleaning up properly the tunnel.
       # node # [   15.560560] portail[623]: 2026-03-05T00:43:56.909060Z ERROR portail::proxy::http_connect: CONNECT tunnel error: peer closed connection without sending TLS close_notify: https://docs.rs/rustls/latest/rustls/manual/_03_howto/index.html#unexpected-eof
       # The curl succeeds but the next assertion fails.
       result = json.loads(node.succeed(
-        "curl --fail --proxytunnel --proxy https://${portailDomain}:8080 https://hello.corp.example.com"
-      )) 
-      assert result['service'] == 'hello.corp' and result['remote_addr'] == self_ip and result['tls'], "Unexpected result from the web service: {}".format(json.dumps(result))
+        "curl --fail --proxy https://${portailDomain}:8080 https://hello.corp.example.com"
+      ))
+      assert (
+        result['service'] == 'hello.corp'
+        and result['remote_addr'] == self_ip
+        and result['tls']
+        and result['protocol'] == 'HTTP/2.0'
+      ), "Unexpected result from the web service: {}".format(json.dumps(result))
+
+      # Test HTTP2 CONNECT
+      # --proxy-http2 will force HTTP2 CONNECT
+      result = json.loads(node.succeed(
+        "curl --fail --proxy-http2 --proxy https://${portailDomain}:8080 https://hello.corp.example.com"
+      ))
+      assert (
+        result['service'] == 'hello.corp'
+        and result['remote_addr'] == self_ip
+        and result['tls']
+        and result['protocol'] == 'HTTP/2.0'
+      ), "Unexpected result from the web service: {}".format(json.dumps(result))
+
+      # Test HTTP2 CONNECT multiplexing
+      # For curl to multiplex requests, we have to:
+      # - add --parallel
+      # - add multiple requests with the same domain
+      node.succeed(
+        "curl --fail --trace-ascii /tmp/multiplex-trace --proxy-http2 --parallel --proxy https://${portailDomain}:8080 -o /tmp/multiplex-out1 -o /tmp/multiplex-out2 https://hello.corp.example.com https://hello.corp.example.com"
+      )
+      for i in ["1", "2"]:
+        result = json.loads(node.succeed("cat /tmp/multiplex-out" + i))
+        assert (
+          result['service'] == 'hello.corp'
+          and result['remote_addr'] == self_ip
+          and result['tls']
+          and result['protocol'] == 'HTTP/2.0'
+        ), "Unexpected result from multiplexed request {}: {}".format(i, json.dumps(result))
+      curl_trace = node.succeed("cat /tmp/multiplex-trace")
+      assert "Multiplexed connection found" in curl_trace, "Expected 'Multiplexed connection found', got: " + curl_trace
+      # Note: this string might change between curl versions
+      assert "Reusing existing https: connection with proxy portail.corp.example.com" in curl_trace, "Expected 'Reusing existing https: connection with proxy portail.corp.example.com', got: " + curl_trace
+
 
       # This exercises rejections and ACLs.
       # TODO: once ACLs are stabilized, uncomment.
@@ -247,12 +310,20 @@ in
       result = json.loads(node.succeed(
         "curl --fail --socks5 127.0.0.1:8080 http://hello.corp.example.com"
       ))
-      assert result['service'] == 'hello.corp' and result['remote_addr'] != self_ip, "Unexpected result from the web service: {}".format(json.dumps(result))
+      assert (
+        result['service'] == 'hello.corp'
+        and result['remote_addr'] != self_ip
+        and result['protocol'] == 'HTTP/1.1'
+      ), "Unexpected result from the web service: {}".format(json.dumps(result))
       # This exercise the SOCKS5 DNS resolution.
       result = json.loads(node.succeed(
         "curl --fail --socks5-hostname 127.0.0.1:8080 http://hello.corp.example.com"
       ))
-      assert result['service'] == 'hello.corp' and result['remote_addr'] != self_ip, "Unexpected result from the web service: {}".format(json.dumps(result))
+      assert (
+        result['service'] == 'hello.corp'
+        and result['remote_addr'] != self_ip
+        and result['protocol'] == 'HTTP/1.1'
+      ), "Unexpected result from the web service: {}".format(json.dumps(result))
     '';
   };
 
@@ -347,6 +418,7 @@ in
       assert (
         result['service'] == 'hello.corp'
         and result['remote_addr'] != self_ip
+        and result['protocol'] == 'HTTP/1.1'
       ), "Unexpected result from the web service: {}".format(json.dumps(result))
     '';
   };

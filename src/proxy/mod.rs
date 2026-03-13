@@ -22,7 +22,7 @@ mod socks5;
 
 use context::InboundStream;
 use http_connect::{serve_http1_connect, serve_http2_connect};
-use protocol_detect::{DetectedProtocol, detect_protocol, detect_tls};
+use protocol_detect::{DetectedProtocol, detect_protocol, detect_tls, ALPN_H2, ALPN_HTTP1_1};
 use socks5::serve_socks5;
 
 #[derive(Debug, Error)]
@@ -104,7 +104,7 @@ async fn build_tls_acceptor(
                 server_certs.cert_chain.clone(),
                 server_certs.private_key.clone_key(),
             )?;
-            config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+            config.alpn_protocols = vec![ALPN_H2.to_vec(), ALPN_HTTP1_1.to_vec()];
             Ok(Some(TlsAcceptor::from(Arc::new(config))))
         } else {
             Ok(None)
