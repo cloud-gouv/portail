@@ -49,7 +49,7 @@ let
     ];
   };
 
-  mkPortailNode = { address }: { nodes, ... }: {
+  mkPortailNode = { address, allowedHostsRegex ? "hello.corp.example.com" }: { nodes, ... }: {
     imports = [ ../module.nix portailEnv ];
 
     networking.interfaces.eth1.ipv4.addresses = [
@@ -69,7 +69,12 @@ let
       enableAtBoot = true;
       proxyListenStream = "0.0.0.0:8080";
       acl.filter.rules = [
-        "hello.corp.example.com -> allow"
+        ''
+          policy hello {
+            when host =~ "${allowedHostsRegex}"
+            action allow
+          }
+        ''
       ];
     };
   };
@@ -134,8 +139,13 @@ in
             tls-chain = certs.proxyCerts.${portailDomain}.cert;
           };
           acl.filter.rules = [
-            "hello.corp.example.com -> allow"
-            ".* -> deny"
+            # DNS resolution takes place now here.
+            ''
+              policy hello {
+                when host =~ "192.168.1.1:80|hello.corp.example.com:80|hello.corp.example.com"
+                action allow
+              }
+            ''
           ];
         };
       };
@@ -241,7 +251,12 @@ in
             };
           };
           acl.filter.rules = [
-            "hello.corp.example.com -> allow"
+            ''
+              policy hello {
+                when host =~ "hello.corp.example.com|192.168.1.1:80"
+                action allow
+              }
+            ''
           ];
         };
       };
@@ -320,7 +335,12 @@ in
           };
 
           acl.filter.rules = [
-            "hello.corp.example.com -> allow"
+            ''
+              policy hello {
+                when host == "hello.corp.example.com"
+                action allow
+              }
+            ''
           ];
         };
       };
@@ -364,6 +384,7 @@ in
 
       portail-alpha = mkPortailNode {
         address = "192.168.1.60";
+        allowedHostsRegex = "hello.corp.example.com|192.168.1.1:80";
       };
 
       microsocks-beta = mkMicrosocksNode {
@@ -400,7 +421,12 @@ in
           };
 
           acl.filter.rules = [
-            "hello.corp.example.com -> allow"
+            ''
+              policy hello {
+                when host =~ "hello.corp.example.com|192.168.1.1:80"
+                action allow
+              }
+            ''
           ];
         };
       };

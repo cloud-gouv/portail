@@ -3,8 +3,14 @@ use fast_socks5::SocksError;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
+use tokio_rustls::{
+    rustls::{
+        server::{VerifierBuilderError, WebPkiClientVerifier},
+        ServerConfig,
+    },
+    TlsAcceptor, TlsStream,
+};
 use tracing::error;
-use tokio_rustls::{TlsAcceptor, TlsStream, rustls::{ServerConfig, server::{VerifierBuilderError, WebPkiClientVerifier}}};
 
 use crate::{config::Settings, proxy::context::RequestContext, state::State};
 
@@ -16,7 +22,7 @@ mod socks5;
 
 use context::InboundStream;
 use http_connect::serve_http_connect;
-use protocol_detect::{DetectedProtocol, detect_protocol, detect_tls};
+use protocol_detect::{detect_protocol, detect_tls, DetectedProtocol};
 use socks5::serve_socks5;
 
 #[derive(Debug, Error)]
@@ -27,10 +33,10 @@ enum ProxyError {
     HTTPConnectError(String),
 }
 
-async fn serve_authenticated_proxy(
+async fn serve_authenticated_proxy<'s>(
     settings: Arc<Settings>,
     state: Arc<RwLock<State>>,
-    ctx: RequestContext,
+    ctx: RequestContext<'s>,
     stream: TlsStream<tokio::net::TcpStream>,
 ) -> anyhow::Result<()> {
     // TODO: extract context
@@ -47,10 +53,10 @@ async fn serve_authenticated_proxy(
     Ok(())
 }
 
-async fn serve_unauthenticated_proxy(
+async fn serve_unauthenticated_proxy<'s>(
     settings: Arc<Settings>,
     state: Arc<RwLock<State>>,
-    ctx: RequestContext,
+    ctx: RequestContext<'s>,
     stream: tokio::net::TcpStream,
 ) -> anyhow::Result<()> {
     let (proto, stream) = detect_protocol(InboundStream::TcpStream(stream)).await?;
@@ -73,8 +79,10 @@ enum ServerTLSConfigError {
     ClientVerifierBuilderError(#[from] VerifierBuilderError),
 }
 
-
-async fn build_tls_acceptor(settings: &Settings, state: Arc<RwLock<State>>) -> Result<Option<TlsAcceptor>, ServerTLSConfigError> {
+async fn build_tls_acceptor(
+    settings: &Settings,
+    state: Arc<RwLock<State>>,
+) -> Result<Option<TlsAcceptor>, ServerTLSConfigError> {
     if settings.listener.is_some() {
         let state = state.read().await;
         let config = ServerConfig::builder();
@@ -82,18 +90,16 @@ async fn build_tls_acceptor(settings: &Settings, state: Arc<RwLock<State>>) -> R
         let config = if let Some(ref roots) = state.root_store {
             config.with_client_cert_verifier(
                 // TODO: support unauthenticated.
-                WebPkiClientVerifier::builder(roots.clone())
-                .build()?
+                WebPkiClientVerifier::builder(roots.clone()).build()?,
             )
         } else {
             config.with_no_client_auth()
         };
 
-
         if let Some(ref server_certs) = state.server_certificates {
             Ok(Some(TlsAcceptor::from(Arc::new(config.with_single_cert(
                 server_certs.cert_chain.clone(),
-                server_certs.private_key.clone_key()
+                server_certs.private_key.clone_key(),
             )?))))
         } else {
             Ok(None)

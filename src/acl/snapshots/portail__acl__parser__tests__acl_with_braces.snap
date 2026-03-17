@@ -1,0 +1,114 @@
+---
+source: src/acl/parser.rs
+expression: rules
+---
+ACLAst {
+    entries: [
+        Route(
+            RouteDefinition {
+                name: "main",
+                attributes: [
+                    When(
+                        And(
+                            Comparison(
+                                Identifier(
+                                    "host",
+                                ),
+                                Regex,
+                                Regex(
+                                    Regex(
+                                        ".*.corp.example.com",
+                                    ),
+                                ),
+                            ),
+                            Comparison(
+                                Identifier(
+                                    "protocol",
+                                ),
+                                Eq,
+                                String(
+                                    "tls",
+                                ),
+                            ),
+                        ),
+                    ),
+                    Use(
+                        [
+                            "exit1",
+                        ],
+                    ),
+                ],
+            },
+        ),
+        Policy(
+            PolicyBlock {
+                name: "corp",
+                attributes: [
+                    When(
+                        And(
+                            Comparison(
+                                Identifier(
+                                    "host",
+                                ),
+                                Regex,
+                                Regex(
+                                    Regex(
+                                        ".*.corp.example.com",
+                                    ),
+                                ),
+                            ),
+                            Comparison(
+                                Identifier(
+                                    "protocol",
+                                ),
+                                Eq,
+                                String(
+                                    "tls",
+                                ),
+                            ),
+                        ),
+                    ),
+                    Require(
+                        And(
+                            Comparison(
+                                Identifier(
+                                    "user_authed",
+                                ),
+                                Eq,
+                                Boolean(
+                                    true,
+                                ),
+                            ),
+                            Comparison(
+                                Identifier(
+                                    "trust",
+                                ),
+                                Eq,
+                                String(
+                                    "high",
+                                ),
+                            ),
+                        ),
+                    ),
+                    Action(
+                        Allow,
+                    ),
+                ],
+            },
+        ),
+        Policy(
+            PolicyBlock {
+                name: "deny_all",
+                attributes: [
+                    Action(
+                        Deny(
+                            Some(
+                                "explain/global-deny.html",
+                            ),
+                        ),
+                    ),
+                ],
+            },
+        ),
+    ],
+}

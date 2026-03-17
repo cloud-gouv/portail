@@ -1,0 +1,56 @@
+---
+source: src/acl/parser.rs
+expression: rules
+---
+ACLAst {
+    entries: [
+        Policy(
+            PolicyBlock {
+                name: "weird_policy",
+                attributes: [
+                    Require(
+                        Comparison(
+                            Identifier(
+                                "something_unknown",
+                            ),
+                            Eq,
+                            Number(
+                                42,
+                            ),
+                        ),
+                    ),
+                    Require(
+                        Comparison(
+                            DottedIdentifier(
+                                [
+                                    "user",
+                                    "undefined_field",
+                                ],
+                            ),
+                            Ne,
+                            String(
+                                "foo",
+                            ),
+                        ),
+                    ),
+                    Action(
+                        Allow,
+                    ),
+                    Action(
+                        Deny(
+                            None,
+                        ),
+                    ),
+                    Action(
+                        Allow,
+                    ),
+                    Action(
+                        Deny(
+                            None,
+                        ),
+                    ),
+                ],
+            },
+        ),
+    ],
+}
