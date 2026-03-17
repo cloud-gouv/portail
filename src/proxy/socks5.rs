@@ -28,7 +28,8 @@ pub async fn connect_to_backend(
         let target_socket = TcpStream::connect(backend.target_address).await?;
         let stream = crate::proxy::client_tls::connect_using_tls_auth(target_socket,
             domain,
-            state.clone()
+            state.clone(),
+            vec![],
         ).await?;
 
         Ok(OutboundSock5Stream::Tls(Socks5Stream::use_stream(stream, None, config).await?))

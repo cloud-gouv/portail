@@ -1,3 +1,4 @@
+use crate::proxy::protocol_detect::{ALPN_H2, ALPN_HTTP1_1};
 use crate::{
     config::{BackendSettings, Settings},
     proxy::{ProxyError, client_tls, context::RequestContext},
@@ -8,11 +9,11 @@ use http_body_util::{BodyExt, Empty, combinators::BoxBody};
 use hyper::{
     Method, Request, Response, StatusCode,
     body::Incoming,
-    header::{self, HeaderValue},
-    server::conn::http1,
+    header,
+    server::conn::{http1, http2},
     service::service_fn,
 };
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioExecutor, TokioIo};
 use std::io;
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -27,11 +28,16 @@ impl<T: AsyncRead + AsyncWrite> OutboundStreamIo for T {}
 
 type OutboundStream = Box<dyn OutboundStreamIo + Send + Unpin>;
 
+enum InboundHttpProtocol {
+    Http1,
+    Http2,
+}
+
 /// References:
 /// - https://docs.rs/hyper/latest/hyper/upgrade/index.html
 /// - https://github.com/hyperium/hyper/blob/master/examples/http_proxy.rs
 /// - https://github.com/hyperium/hyper/blob/master/examples/upgrades.rs
-pub async fn serve_http_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
+pub async fn serve_http1_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     settings: Arc<Settings>,
     state: Arc<RwLock<State>>,
     ctx: RequestContext,
@@ -45,10 +51,48 @@ pub async fn serve_http_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'stat
         .serve_connection(
             io,
             service_fn(move |req| {
-                handle_http_request(req, ctx.clone(), settings.clone(), state.clone())
+                handle_http_request(
+                    req,
+                    ctx.clone(),
+                    settings.clone(),
+                    state.clone(),
+                    InboundHttpProtocol::Http1,
+                )
             }),
         )
         .with_upgrades()
+        .await
+        .map_err(|e| ProxyError::HTTPConnectError(e.to_string()))?;
+
+    Ok(())
+}
+
+pub async fn serve_http2_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
+    settings: Arc<Settings>,
+    state: Arc<RwLock<State>>,
+    ctx: RequestContext,
+    stream: S,
+) -> Result<(), ProxyError> {
+    let io = TokioIo::new(stream);
+
+    // TODO: update ctx
+
+    // TokioExecutor is a wrapper around tokio::spawn
+    // https://docs.rs/hyper-util/latest/src/hyper_util/rt/tokio.rs.html#112
+    http2::Builder::new(TokioExecutor::new())
+        .enable_connect_protocol()
+        .serve_connection(
+            io,
+            service_fn(move |req| {
+                handle_http_request(
+                    req,
+                    ctx.clone(),
+                    settings.clone(),
+                    state.clone(),
+                    InboundHttpProtocol::Http2,
+                )
+            }),
+        )
         .await
         .map_err(|e| ProxyError::HTTPConnectError(e.to_string()))?;
 
@@ -60,6 +104,7 @@ async fn handle_http_request(
     mut ctx: RequestContext,
     settings: Arc<Settings>,
     state: Arc<RwLock<State>>,
+    inbound_protocol: InboundHttpProtocol,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
     if req.method() != Method::CONNECT {
         debug!(
@@ -130,7 +175,14 @@ async fn handle_http_request(
             "Backend {} selected for HTTP CONNECT to {}",
             backend.target_address, final_address
         );
-        match connect_to_http_proxy_backend(backend, &final_address, state.clone()).await {
+        match connect_to_http_proxy_backend(
+            backend,
+            &final_address,
+            state.clone(),
+            &inbound_protocol,
+        )
+        .await
+        {
             Ok(upstream) => {
                 stream = Some(upstream);
                 break;
@@ -172,12 +224,11 @@ async fn handle_http_request(
         }
     });
 
+    // Connection: keep-alive is
+    // - the default for HTTP/1.1
+    // - stripped by hyper for HTTP/2 https://github.com/hyperium/hyper/blob/e13e783927d429fc03038fe512eeb4d379cf1a70/src/proto/h2/mod.rs#L43
     let mut resp = Response::new(empty_body());
     *resp.status_mut() = StatusCode::OK;
-    resp.headers_mut().insert(
-        hyper::header::CONNECTION,
-        HeaderValue::from_static("keep-alive"),
-    );
 
     Ok(resp)
 }
@@ -190,14 +241,20 @@ fn empty_body() -> BoxBody<Bytes, hyper::Error> {
 
 /// Send CONNECT and return the stream on 2xx response
 /// Ref: https://github.com/hyperium/hyper/blob/master/examples/client.rs
+///
+/// When upstream uses TLS, ALPN is ordered by inbound protocol:
+/// - Client HTTP/1.1 → [http/1.1, h2]
+/// - Client HTTP/2 → [h2, http/1.1]
+/// When upstream is plain TCP, HTTP/1.1 is used.
 async fn connect_to_http_proxy_backend(
     backend: &BackendSettings,
     final_address: &str,
     state: Arc<RwLock<State>>,
+    inbound_protocol: &InboundHttpProtocol,
 ) -> io::Result<OutboundStream> {
     let socket = TcpStream::connect(backend.target_address).await?;
 
-    let stream: OutboundStream = if backend.identity_aware {
+    let (stream, use_http2): (OutboundStream, bool) = if backend.identity_aware {
         debug!(
             "Backend is identity-aware, establishing a TLS connection to {}",
             backend.target_address
@@ -205,26 +262,29 @@ async fn connect_to_http_proxy_backend(
         let backend_host = backend.target_address.ip().to_string();
         let domain = ServerName::try_from(backend_host)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-        let tls = client_tls::connect_using_tls_auth(socket, domain, state).await?;
-        Box::new(tls)
+
+        let alpn_protocols = match inbound_protocol {
+            InboundHttpProtocol::Http1 => vec![ALPN_HTTP1_1.to_vec(), ALPN_H2.to_vec()],
+            InboundHttpProtocol::Http2 => vec![ALPN_H2.to_vec(), ALPN_HTTP1_1.to_vec()],
+        };
+        let tls = client_tls::connect_using_tls_auth(socket, domain, state, alpn_protocols).await?;
+
+        let use_http2 = match tls {
+            tokio_rustls::TlsStream::Client(ref client) => client
+                .get_ref()
+                .1
+                .alpn_protocol()
+                .map(|p| p.as_ref() as &[u8] == ALPN_H2)
+                .unwrap_or(false),
+            _ => false,
+        };
+
+        (Box::new(tls), use_http2)
     } else {
-        Box::new(socket)
+        (Box::new(socket), false)
     };
 
     let io = TokioIo::new(stream);
-
-    let (mut sender, conn) = hyper::client::conn::http1::Builder::new()
-        .handshake(io)
-        .await
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
-    // We must await the connection (and enable upgrades)
-    // https://docs.rs/hyper/latest/hyper/client/conn/http1/struct.Builder.html#method.handshake
-    tokio::spawn(async move {
-        if let Err(e) = conn.with_upgrades().await {
-            warn!("Cannot HTTP CONNECT to upstream: {}", e);
-        }
-    });
 
     // The following points are important for choosing the current implementation of the CONNECT:
     // 1. hyper has optimized the way it parses headers:
@@ -238,26 +298,69 @@ async fn connect_to_http_proxy_backend(
         .body(Empty::<Bytes>::new())
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
-    let mut response = sender
-        .send_request(request)
-        .await
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    if use_http2 {
+        let (mut sender, conn) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
+            .handshake(io)
+            .await
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        tokio::spawn(async move {
+            if let Err(e) = conn.await {
+                warn!("Cannot HTTP CONNECT to upstream: {}", e);
+            }
+        });
 
-    if !response.status().is_success() {
-        return Err(io::Error::new(
-            io::ErrorKind::ConnectionRefused,
-            format!(
-                "HTTP proxy CONNECT failed with status {}",
-                response.status()
-            ),
-        ));
+        let mut response = sender
+            .send_request(request)
+            .await
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+        if !response.status().is_success() {
+            return Err(io::Error::new(
+                io::ErrorKind::ConnectionRefused,
+                format!(
+                    "HTTP proxy CONNECT failed with status {}",
+                    response.status()
+                ),
+            ));
+        }
+
+        let upgraded = hyper::upgrade::on(&mut response)
+            .await
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+        Ok(Box::new(TokioIo::new(upgraded)) as OutboundStream)
+    } else {
+        let (mut sender, conn) = hyper::client::conn::http1::Builder::new()
+            .handshake(io)
+            .await
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        // We must await the connection (and enable upgrades)
+        // https://docs.rs/hyper/latest/hyper/client/conn/http1/struct.Builder.html#method.handshake
+        tokio::spawn(async move {
+            if let Err(e) = conn.with_upgrades().await {
+                warn!("Cannot HTTP CONNECT to upstream: {}", e);
+            }
+        });
+
+        let mut response = sender
+            .send_request(request)
+            .await
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+        if !response.status().is_success() {
+            return Err(io::Error::new(
+                io::ErrorKind::ConnectionRefused,
+                format!(
+                    "HTTP proxy CONNECT failed with status {}",
+                    response.status()
+                ),
+            ));
+        }
+
+        let upgraded = hyper::upgrade::on(&mut response)
+            .await
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+        Ok(Box::new(TokioIo::new(upgraded)))
     }
-
-    let upgraded = hyper::upgrade::on(&mut response)
-        .await
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
-    let stream: OutboundStream = Box::new(TokioIo::new(upgraded));
-
-    Ok(stream)
 }
