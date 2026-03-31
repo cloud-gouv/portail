@@ -1,5 +1,6 @@
 use std::{fmt::Display, net::SocketAddr};
 
+#[allow(clippy::large_enum_variant)]
 pub enum InboundStream {
     TcpStream(tokio::net::TcpStream),
     TlsStream(tokio_rustls::TlsStream<tokio::net::TcpStream>),

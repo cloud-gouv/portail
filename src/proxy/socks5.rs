@@ -21,6 +21,7 @@ use crate::{
     state::State,
 };
 
+#[allow(clippy::large_enum_variant)]
 pub enum OutboundSock5Stream {
     Tls(Socks5Stream<TlsStream<TcpStream>>),
     Plain(Socks5Stream<TcpStream>),

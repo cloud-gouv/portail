@@ -123,6 +123,7 @@ impl<'s> ConcreteOperand<'s> {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     pub fn compare(lhs: Self, comp: &Comparator, rhs: Self) -> Result<bool, ComparisonError<'s>> {
         use Comparator::*;
         use ConcreteOperand::*;

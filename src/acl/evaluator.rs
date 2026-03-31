@@ -91,6 +91,7 @@ pub enum InterpretationError<'s> {
     ComparisonError(ComparisonError<'s>),
 }
 
+#[allow(clippy::result_large_err)]
 impl<'s> EvaluationContext<'s> {
     pub fn insert(&mut self, key: &'s str, value: ConcreteOperand<'s>) {
         self.local_variables.insert(key, value);
