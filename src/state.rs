@@ -96,23 +96,23 @@ impl State {
         &mut self,
         settings: &Settings,
     ) -> Result<(), ReloadTrustAnchorError> {
-        if let Some(ref listener) = settings.listener {
-            if let Some(ref client_ca) = listener.cacert_file {
-                let mut ca_file = BufReader::new(std::fs::File::open(&client_ca)?);
-                let certs: Vec<_> = rustls_pemfile::read_all(&mut ca_file)
-                    .map(|item| {
-                        item.map_err(|_| MaterialError::SectionParsingError)
-                            .and_then(expect_certificate)
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
+        if let Some(ref listener) = settings.listener
+            && let Some(ref client_ca) = listener.cacert_file
+        {
+            let mut ca_file = BufReader::new(std::fs::File::open(client_ca)?);
+            let certs: Vec<_> = rustls_pemfile::read_all(&mut ca_file)
+                .map(|item| {
+                    item.map_err(|_| MaterialError::SectionParsingError)
+                        .and_then(expect_certificate)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
 
-                let mut roots = RootCertStore::empty();
-                for cert in certs {
-                    roots.add(cert)?;
-                }
-
-                self.root_store = Some(Arc::new(roots));
+            let mut roots = RootCertStore::empty();
+            for cert in certs {
+                roots.add(cert)?;
             }
+
+            self.root_store = Some(Arc::new(roots));
         }
 
         Ok(())
@@ -125,7 +125,7 @@ impl State {
         if let Some(ref listener) = settings.listener {
             match (&listener.tls_chain, &listener.tls_privkey) {
                 (Some(tls_chain), Some(tls_privkey)) => {
-                    let mut tls_chain_file = BufReader::new(std::fs::File::open(&tls_chain)?);
+                    let mut tls_chain_file = BufReader::new(std::fs::File::open(tls_chain)?);
                     let tls_chain_certs: Vec<_> = rustls_pemfile::read_all(&mut tls_chain_file)
                         .map(|item| {
                             item.map_err(|_| MaterialError::SectionParsingError)
@@ -133,7 +133,7 @@ impl State {
                         })
                         .collect::<Result<Vec<_>, _>>()?;
                     let (tls_private_key, _) =
-                        rustls_pemfile::read_one_from_slice(&std::fs::read(&tls_privkey)?)
+                        rustls_pemfile::read_one_from_slice(&std::fs::read(tls_privkey)?)
                             .map_err(|_| ReloadServerCertificateError::PEMParsingError)?
                             .ok_or(ReloadServerCertificateError::MissingPrivateKey)?;
 

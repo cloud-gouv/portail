@@ -216,7 +216,7 @@ async fn main() -> Result<()> {
             )
             .into_owned();
             let settings: Arc<config::Settings> = Arc::new(config::init(&config));
-            match acl::load_rules_from_str(&mut contents.as_str(), &settings) {
+            match acl::load_rules_from_str(contents.as_str(), &settings) {
                 Ok(rules) => info!(
                     "Parsed {} ACL policies and {} routes successfully",
                     rules.hir.policies.len(),

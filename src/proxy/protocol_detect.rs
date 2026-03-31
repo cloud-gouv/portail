@@ -44,7 +44,7 @@ pub async fn detect_protocol(
             if let tokio_rustls::TlsStream::Server(server_stream) = tls {
                 let (_io, session) = server_stream.get_ref();
                 if let Some(alpn) = session.alpn_protocol() {
-                    let alpn: &[u8] = alpn.as_ref();
+                    let alpn: &[u8] = alpn;
                     if alpn == ALPN_H2 {
                         return Ok((DetectedProtocol::Http2, socket));
                     }

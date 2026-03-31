@@ -94,7 +94,7 @@ fn route_to_hir(
     Ok(RouteDefinition {
         name: route.name.to_owned(),
         when,
-        r#use: r#use,
+        r#use,
     })
 }
 

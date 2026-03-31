@@ -1,6 +1,5 @@
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    str::FromStr,
     sync::Arc,
 };
 
@@ -200,14 +199,15 @@ pub async fn serve_socks5<'s, S: AsyncRead + Unpin + AsyncWrite>(
         backends.append(&mut recommended_routes);
     }
 
-    if backends.is_empty() {
-        if let Some(ref backend_id) = state.read().await.default_backend {
-            let backend = opts.backends.get(backend_id).expect(&format!(
-                "BUG: default backend {backend_id} went away from settings"
-            ));
+    if backends.is_empty()
+        && let Some(ref backend_id) = state.read().await.default_backend
+    {
+        let backend = opts
+            .backends
+            .get(backend_id)
+            .unwrap_or_else(|| panic!("BUG: default backend {backend_id} went away from settings"));
 
-            backends.push(backend);
-        }
+        backends.push(backend);
     }
 
     backends.reverse();

@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, collections::HashSet, net::IpAddr, ops::Deref, path::PathBuf};
+use std::{collections::HashSet, path::PathBuf};
 
 use http::Uri;
 use regex::Regex;

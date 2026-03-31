@@ -223,14 +223,15 @@ async fn handle_http_request(
         backends.append(&mut recommended_routes);
     }
 
-    if backends.is_empty() {
-        if let Some(ref backend_id) = state.read().await.default_backend {
-            let backend = settings.backends.get(backend_id).expect(&format!(
-                "BUG: default backend {backend_id} went away from settings"
-            ));
+    if backends.is_empty()
+        && let Some(ref backend_id) = state.read().await.default_backend
+    {
+        let backend = settings
+            .backends
+            .get(backend_id)
+            .unwrap_or_else(|| panic!("BUG: default backend {backend_id} went away from settings"));
 
-            backends.push(backend);
-        }
+        backends.push(backend);
     }
 
     backends.reverse();
@@ -340,7 +341,7 @@ async fn connect_to_http_proxy_backend(
                 .get_ref()
                 .1
                 .alpn_protocol()
-                .map(|p| p.as_ref() as &[u8] == ALPN_H2)
+                .map(|p| p as &[u8] == ALPN_H2)
                 .unwrap_or(false),
             _ => false,
         };
@@ -362,13 +363,13 @@ async fn connect_to_http_proxy_backend(
         .uri(final_address)
         .header(header::HOST, final_address)
         .body(Empty::<Bytes>::new())
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        .map_err(io::Error::other)?;
 
     if use_http2 {
         let (mut sender, conn) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
             .handshake(io)
             .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
         tokio::spawn(async move {
             if let Err(e) = conn.await {
                 warn!("Cannot HTTP CONNECT to upstream: {}", e);
@@ -378,7 +379,7 @@ async fn connect_to_http_proxy_backend(
         let mut response = sender
             .send_request(request)
             .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
 
         if !response.status().is_success() {
             return Err(io::Error::new(
@@ -392,14 +393,14 @@ async fn connect_to_http_proxy_backend(
 
         let upgraded = hyper::upgrade::on(&mut response)
             .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
 
         Ok(Box::new(TokioIo::new(upgraded)) as OutboundStream)
     } else {
         let (mut sender, conn) = hyper::client::conn::http1::Builder::new()
             .handshake(io)
             .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
         // We must await the connection (and enable upgrades)
         // https://docs.rs/hyper/latest/hyper/client/conn/http1/struct.Builder.html#method.handshake
         tokio::spawn(async move {
@@ -411,7 +412,7 @@ async fn connect_to_http_proxy_backend(
         let mut response = sender
             .send_request(request)
             .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
 
         if !response.status().is_success() {
             return Err(io::Error::new(
@@ -425,7 +426,7 @@ async fn connect_to_http_proxy_backend(
 
         let upgraded = hyper::upgrade::on(&mut response)
             .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
 
         Ok(Box::new(TokioIo::new(upgraded)))
     }

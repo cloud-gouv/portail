@@ -28,7 +28,7 @@ impl Display for ControlError {
                     "Backend `{}` was not found, available backends are {}",
                     provided_backend,
                     available_backends
-                        .into_iter()
+                        .iter()
                         .map(|s| format!("`{}`", s))
                         .collect::<Vec<_>>()
                         .join(", ")
