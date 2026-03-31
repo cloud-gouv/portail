@@ -76,13 +76,13 @@ pub async fn route_to_backend<S: AsyncRead + Unpin + AsyncWrite>(
     Ok(())
 }
 
-pub async fn serve_socks5<'s, S: AsyncRead + Unpin + AsyncWrite>(
+pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
     opts: Arc<Settings>,
     state: Arc<RwLock<State>>,
     ctx: InitialRequestContext,
     socket: S,
 ) -> Result<(), SocksError> {
-    let mut ctx = ctx.into_local();
+    let mut ctx = ctx.as_local();
     let should_resolve_dns: bool = state.read().await.default_backend.is_none();
 
     let (proto, cmd, target_addr) = Socks5ServerProtocol::accept_no_auth(socket)

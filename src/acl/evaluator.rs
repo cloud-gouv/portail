@@ -12,20 +12,23 @@ use crate::{
     config::BackendSettings,
 };
 
-/// These structures are useful to explain WHY we are denied.
+// These structures are useful to explain WHY we are denied.
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct ExpressionResult<'s> {
     pub expression: &'s Expression,
     pub result: Result<bool, String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct PolicyContext<'s> {
     pub policy_name: &'s str,
     pub when_results: Vec<ExpressionResult<'s>>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct RequireContext<'s> {
     pub policy_name: &'s str,
@@ -53,6 +56,7 @@ impl OwnedEvaluationContext {
         }
     }
 
+    #[allow(dead_code)]
     pub fn insert(&mut self, key: String, value: OwnedConcreteOperand) {
         self.variables.insert(key, value);
     }
@@ -65,6 +69,7 @@ impl OwnedEvaluationContext {
     }
 }
 
+#[allow(dead_code)]
 pub struct RequestAssessment<'s> {
     /// Which policy decided this assessment?
     policy: PolicyContext<'s>,

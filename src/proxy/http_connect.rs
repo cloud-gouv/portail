@@ -108,7 +108,7 @@ async fn handle_http_request(
     state: Arc<RwLock<State>>,
     inbound_protocol: InboundHttpProtocol,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
-    let mut ctx = ctx.into_local();
+    let mut ctx = ctx.as_local();
 
     if req.method() != Method::CONNECT {
         debug!(
@@ -312,6 +312,7 @@ fn empty_body() -> BoxBody<Bytes, hyper::Error> {
 /// When upstream uses TLS, ALPN is ordered by inbound protocol:
 /// - Client HTTP/1.1 → [http/1.1, h2]
 /// - Client HTTP/2 → [h2, http/1.1]
+///
 /// When upstream is plain TCP, HTTP/1.1 is used.
 async fn connect_to_http_proxy_backend(
     backend: &BackendSettings,

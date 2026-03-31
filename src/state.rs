@@ -1,3 +1,5 @@
+//! Contains the state of the application and various state transitions APIs.
+
 use std::{
     io::BufReader,
     sync::{Arc, atomic::AtomicUsize},
@@ -11,8 +13,6 @@ use tracing::{info, warn};
 
 use crate::config::Settings;
 use thiserror::Error;
-
-///! Contains the state of the application and various state transitions APIs.
 
 pub struct ServerCertificates<'a> {
     pub cert_chain: Vec<CertificateDer<'a>>,
@@ -159,8 +159,10 @@ impl State {
         Ok(false)
     }
 
+    #[allow(dead_code)]
     pub fn reload_client_certs(&self) {}
 
+    #[allow(dead_code)]
     pub fn reload_acl_rules(&mut self, settings: &Settings) {
         if let Some(ref acl_rules_path) = settings.filter_acl_rules_path {
             let new_acl = crate::acl::load_rules_from_file(acl_rules_path, settings);
@@ -180,6 +182,7 @@ impl State {
     }
 }
 
+#[allow(dead_code)]
 pub struct Statistics {
     pub nr_ongoing_client_connections: AtomicUsize,
     pub nr_tcp_connections: AtomicUsize,

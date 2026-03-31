@@ -76,6 +76,7 @@ pub enum ConcreteOperand<'s> {
     Set(HashSet<&'s str>),
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum OwnedConcreteOperand {
     String(String),
