@@ -2,16 +2,16 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use regex::Regex;
+use winnow::ModalResult;
 use winnow::ascii::{digit1, multispace1};
 use winnow::combinator::{alt, cut_err, dispatch, fail, opt, preceded, repeat, separated};
 use winnow::error::{
     ContextError, ErrMode, FromExternalError, ParseError, StrContext, StrContextValue,
 };
 use winnow::token::take;
-use winnow::ModalResult;
 use winnow::{
-    ascii::multispace0, combinator::delimited, error::ParserError, token::take_while, Parser,
-    Result,
+    Parser, Result, ascii::multispace0, combinator::delimited, error::ParserError,
+    token::take_while,
 };
 
 use crate::acl::ast::{

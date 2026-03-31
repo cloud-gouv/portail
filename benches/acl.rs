@@ -1,8 +1,8 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use portail::{
     acl::{
-        ast::ConcreteOperand, ast_to_hir, parser::parse_into_ast, ACLRules, EvaluationContext,
-        OwnedEvaluationContext,
+        ACLRules, EvaluationContext, OwnedEvaluationContext, ast::ConcreteOperand, ast_to_hir,
+        parser::parse_into_ast,
     },
     config::BackendSettings,
 };

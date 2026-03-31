@@ -7,7 +7,7 @@ use std::path::Path;
 
 pub use ast::Action;
 pub use evaluator::{EvaluationContext, OwnedEvaluationContext};
-pub use hir::{ast_to_hir, ACLHir};
+pub use hir::{ACLHir, ast_to_hir};
 pub use parser::parse_into_ast;
 use thiserror::Error;
 

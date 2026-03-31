@@ -3,8 +3,8 @@ use std::collections::HashSet;
 
 use thiserror::Error;
 
-use crate::acl::ast;
 use crate::acl::Action;
+use crate::acl::ast;
 use crate::config::BackendSettings;
 
 #[derive(Debug, Clone)]
@@ -190,8 +190,8 @@ pub fn ast_to_hir<'s>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::acl::ast;
     use crate::acl::Action;
+    use crate::acl::ast;
     use crate::config::BackendSettings;
     use insta::assert_debug_snapshot;
     use std::collections::HashMap;

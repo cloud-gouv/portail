@@ -2,17 +2,17 @@ use crate::proxy::context::InitialRequestContext;
 use crate::proxy::protocol_detect::{ALPN_H2, ALPN_HTTP1_1};
 use crate::{
     config::{BackendSettings, Settings},
-    proxy::{client_tls, ProxyError},
+    proxy::{ProxyError, client_tls},
     state::State,
 };
 use bytes::Bytes;
-use http_body_util::{combinators::BoxBody, BodyExt, Empty};
+use http_body_util::{BodyExt, Empty, combinators::BoxBody};
 use hyper::{
+    Method, Request, Response, StatusCode,
     body::Incoming,
     header,
     server::conn::{http1, http2},
     service::service_fn,
-    Method, Request, Response, StatusCode,
 };
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use std::io;

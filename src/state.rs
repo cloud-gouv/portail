@@ -1,11 +1,11 @@
 use std::{
     io::BufReader,
-    sync::{atomic::AtomicUsize, Arc},
+    sync::{Arc, atomic::AtomicUsize},
 };
 
 use tokio_rustls::rustls::{
-    pki_types::{CertificateDer, PrivateKeyDer},
     RootCertStore,
+    pki_types::{CertificateDer, PrivateKeyDer},
 };
 use tracing::{info, warn};
 
@@ -205,7 +205,9 @@ pub fn init(settings: &Settings) -> Result<State, InitError> {
     if state.reload_server_certs(settings)? {
         info!("TLS listener is configured and available on this proxy.");
     } else {
-        info!("TLS is not configured and will not be available for requests. Use this only if your proxy is secured in another fashion: localhost binding or tunnel chaining.");
+        info!(
+            "TLS is not configured and will not be available for requests. Use this only if your proxy is secured in another fashion: localhost binding or tunnel chaining."
+        );
     }
 
     state.reload_trust_anchors(settings)?;

@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::{error::Error, fmt::Display};
-use zlink::{proxy, ReplyError};
+use zlink::{ReplyError, proxy};
 
 #[derive(Debug, Clone, PartialEq, ReplyError, zlink::introspect::ReplyError)]
 #[zlink(interface = "fr.gouv.portail.Control")]

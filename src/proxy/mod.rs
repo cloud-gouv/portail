@@ -4,11 +4,11 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use tokio_rustls::{
-    rustls::{
-        server::{VerifierBuilderError, WebPkiClientVerifier},
-        ServerConfig,
-    },
     TlsAcceptor, TlsStream,
+    rustls::{
+        ServerConfig,
+        server::{VerifierBuilderError, WebPkiClientVerifier},
+    },
 };
 use tracing::error;
 
@@ -22,7 +22,7 @@ mod socks5;
 
 use context::InboundStream;
 use http_connect::{serve_http1_connect, serve_http2_connect};
-use protocol_detect::{detect_protocol, detect_tls, DetectedProtocol, ALPN_H2, ALPN_HTTP1_1};
+use protocol_detect::{ALPN_H2, ALPN_HTTP1_1, DetectedProtocol, detect_protocol, detect_tls};
 use socks5::serve_socks5;
 
 #[derive(Debug, Error)]

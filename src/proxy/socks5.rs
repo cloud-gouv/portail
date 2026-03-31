@@ -5,15 +5,15 @@ use std::{
 };
 
 use fast_socks5::{
-    client::Socks5Stream, server::Socks5ServerProtocol, util::target_addr::TargetAddr, ReplyError,
-    Socks5Command, SocksError,
+    ReplyError, Socks5Command, SocksError, client::Socks5Stream, server::Socks5ServerProtocol,
+    util::target_addr::TargetAddr,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpStream,
     sync::RwLock,
 };
-use tokio_rustls::{rustls::pki_types::ServerName, TlsStream};
+use tokio_rustls::{TlsStream, rustls::pki_types::ServerName};
 use tracing::{debug, info, warn};
 
 use crate::{

@@ -250,9 +250,9 @@ mod tests {
     #[cfg(test)]
     mod tests {
         use crate::acl::{
+            Action, EvaluationContext, OwnedEvaluationContext,
             ast::{Comparator, ConcreteOperand, Expression, Operand},
             hir::{ACLHir, PolicyDefinition},
-            Action, EvaluationContext, OwnedEvaluationContext,
         };
 
         #[test]
@@ -351,10 +351,10 @@ mod tests {
 
         #[test]
         fn test_in_operator() {
-            use crate::acl::ast::{Comparator, ConcreteOperand, Expression, Operand};
-            use crate::acl::hir::{ACLHir, PolicyDefinition};
             use crate::acl::Action;
             use crate::acl::EvaluationContext;
+            use crate::acl::ast::{Comparator, ConcreteOperand, Expression, Operand};
+            use crate::acl::hir::{ACLHir, PolicyDefinition};
 
             let hir = ACLHir {
                 routes: vec![],
@@ -389,10 +389,10 @@ mod tests {
 
     #[test]
     fn test_regex_match_operator() {
-        use crate::acl::ast::{Comparator, ConcreteOperand, Expression, Operand};
-        use crate::acl::hir::{ACLHir, PolicyDefinition};
         use crate::acl::Action;
         use crate::acl::EvaluationContext;
+        use crate::acl::ast::{Comparator, ConcreteOperand, Expression, Operand};
+        use crate::acl::hir::{ACLHir, PolicyDefinition};
 
         let hir = ACLHir {
             routes: vec![],
@@ -421,8 +421,8 @@ mod tests {
 
     #[test]
     fn test_fail_close_missing_policies() {
-        use crate::acl::hir::ACLHir;
         use crate::acl::EvaluationContext;
+        use crate::acl::hir::ACLHir;
 
         let hir = ACLHir {
             routes: vec![],
