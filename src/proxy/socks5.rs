@@ -8,6 +8,7 @@ use fast_socks5::{
     client::Socks5Stream, server::Socks5ServerProtocol, util::target_addr::TargetAddr, ReplyError,
     Socks5Command, SocksError,
 };
+use thiserror::Error;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpStream,
@@ -18,46 +19,79 @@ use tracing::{debug, info, warn};
 
 use crate::{
     config::{BackendSettings, Settings},
-    proxy::context::{InitialRequestContext, TargetContext},
+    proxy::{
+        context::{InitialRequestContext, TargetContext},
+        ssh::{proxy_via_ssh, SSHProxyError},
+    },
     state::State,
 };
 
 pub enum OutboundSock5Stream {
+    Ssh(Socks5Stream<russh::ChannelStream<russh::client::Msg>>),
     Tls(Socks5Stream<TlsStream<TcpStream>>),
     Plain(Socks5Stream<TcpStream>),
 }
 
+#[derive(Error, Debug)]
+pub enum BackendConnectError {
+    #[error("An IO error occurred: {0}")]
+    IO(#[from] std::io::Error),
+    #[error("A SOCKS5 related error occurred: {0}")]
+    SocksError(#[from] SocksError),
+    #[error("An SSH error occurred: {0}")]
+    SSHError(#[from] SSHProxyError),
+}
+
 pub async fn connect_to_backend(
+    settings: &Settings,
     backend: &BackendSettings,
     final_address: &TargetAddr,
-    state: Arc<RwLock<State>>, // TODO: better error type
-) -> Result<OutboundSock5Stream, SocksError> {
+    state: Arc<RwLock<State>>,
+) -> Result<OutboundSock5Stream, BackendConnectError> {
     let config = fast_socks5::client::Config::default();
     let (target_addr, target_port) = final_address.clone().into_string_and_port();
 
-    if backend.identity_aware {
-        debug!("Backend is identity-aware, establishing a TLS connection to the backend first");
-        // TODO: remove the panic
-        let domain = ServerName::try_from(target_addr).unwrap();
-        let target_socket = TcpStream::connect(backend.target_address).await?;
-        let stream = crate::proxy::client_tls::connect_using_tls_auth(
-            target_socket,
-            domain,
-            state.clone(),
-            vec![],
-        )
-        .await?;
-
-        Ok(OutboundSock5Stream::Tls(
-            Socks5Stream::use_stream(stream, None, config).await?,
-        ))
-    } else {
-        debug!(
+    match backend {
+        BackendSettings::Direct { target_address } => {
+            debug!(
             "Backend is not identity-aware, establishing a plain SOCKS5 connection to the backend"
         );
-        Ok(OutboundSock5Stream::Plain(
-            Socks5Stream::connect(backend.target_address, target_addr, target_port, config).await?,
-        ))
+            Ok(OutboundSock5Stream::Plain(
+                Socks5Stream::connect(target_address, target_addr, target_port, config).await?,
+            ))
+        }
+        BackendSettings::IdentityAware { target_address } => {
+            debug!("Backend is identity-aware, establishing a TLS connection to the backend first");
+            // TODO: remove the panic
+            let domain = ServerName::try_from(target_addr).unwrap();
+            let target_socket = TcpStream::connect(target_address).await?;
+            let stream = crate::proxy::client_tls::connect_using_tls_auth(
+                target_socket,
+                domain,
+                state.clone(),
+                vec![],
+            )
+            .await?;
+
+            Ok(OutboundSock5Stream::Tls(
+                Socks5Stream::use_stream(stream, None, config).await?,
+            ))
+        }
+        BackendSettings::SSH {
+            target_address,
+            proxy_host,
+        } => {
+            debug!("Backend is SSH-aware, establishing an SSH tunnel");
+
+            Ok(OutboundSock5Stream::Ssh(
+                Socks5Stream::use_stream(
+                    proxy_via_ssh(settings.ssh.as_ref(), &proxy_host, target_address).await?,
+                    None,
+                    config,
+                )
+                .await?,
+            ))
+        }
     }
 }
 
@@ -72,6 +106,7 @@ pub async fn route_to_backend<S: AsyncRead + Unpin + AsyncWrite>(
     match outbound_stream {
         OutboundSock5Stream::Tls(s) => fast_socks5::server::transfer(inner, s).await,
         OutboundSock5Stream::Plain(s) => fast_socks5::server::transfer(inner, s).await,
+        OutboundSock5Stream::Ssh(s) => fast_socks5::server::transfer(inner, s).await,
     }
 
     Ok(())
@@ -214,12 +249,9 @@ pub async fn serve_socks5<'s, S: AsyncRead + Unpin + AsyncWrite>(
 
     // Either, we route to another backend or we do the SOCKS5 proxying ourselves.
     while let Some(backend) = backends.pop() {
-        debug!(
-            "Backend {} selected for routing the connection",
-            &backend.target_address
-        );
+        debug!("Backend {} selected for routing the connection", &backend);
 
-        match connect_to_backend(backend, &final_addr, state.clone()).await {
+        match connect_to_backend(&opts, backend, &final_addr, state.clone()).await {
             Ok(stream) => {
                 route_to_backend(stream, proto).await?;
                 return Ok(());
@@ -228,7 +260,7 @@ pub async fn serve_socks5<'s, S: AsyncRead + Unpin + AsyncWrite>(
             Err(err) => {
                 debug!(
                     "Backend {} failed to route the request: {err}, trying the next one",
-                    &backend.target_address
+                    &backend
                 );
                 continue;
             }

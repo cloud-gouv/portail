@@ -204,9 +204,8 @@ mod tests {
         for id in ids {
             backends.insert(
                 id.to_string(),
-                BackendSettings {
+                BackendSettings::Direct {
                     target_address: "1.1.1.1:443".parse().unwrap(),
-                    identity_aware: false,
                 },
             );
         }

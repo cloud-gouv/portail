@@ -19,6 +19,7 @@ mod context;
 mod http_connect;
 mod protocol_detect;
 mod socks5;
+mod ssh;
 
 use context::InboundStream;
 use http_connect::{serve_http1_connect, serve_http2_connect};

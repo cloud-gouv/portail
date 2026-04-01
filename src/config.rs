@@ -1,19 +1,52 @@
 use chrono::Duration;
 use std::{
     collections::HashMap,
+    fmt::Display,
     net::SocketAddr,
     path::{Path, PathBuf},
 };
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(rename_all = "kebab-case")]
-pub struct BackendSettings {
-    pub target_address: SocketAddr,
-    /// Whether this backend requires a TLS connection with a client certificate.
-    #[serde(default)]
-    pub identity_aware: bool,
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case", tag = "type")]
+pub enum BackendSettings {
+    /// For identity-aware proxies (i.e. TLS with client certificates)
+    #[serde(rename_all = "kebab-case")]
+    IdentityAware { target_address: SocketAddr },
+
+    /// For proxies behind SSH
+    #[serde(rename_all = "kebab-case")]
+    SSH {
+        target_address: SocketAddr,
+        proxy_host: String,
+    },
+
+    /// For direct proxy without any specific identity awareness (i.e. no TLS with client
+    /// certificates)
+    #[serde(rename_all = "kebab-case")]
+    Direct { target_address: SocketAddr },
+}
+
+impl Display for BackendSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::IdentityAware { target_address } => f.write_fmt(format_args!(
+                "<identity-aware direct backend to {}>",
+                target_address
+            )),
+            Self::Direct { target_address } => {
+                f.write_fmt(format_args!("<direct backend to {}>", target_address))
+            }
+            Self::SSH {
+                target_address,
+                proxy_host,
+            } => f.write_fmt(format_args!(
+                "<backend {} over SSH to {}>",
+                proxy_host, target_address
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -43,6 +76,14 @@ pub struct RPCSettings {
     /// They cannot disable the proxy functionality nonetheless.
     #[serde(default)]
     pub trusted_groups: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct SSHSettings {
+    /// Path to an SSH agent backed by a UNIX domain socket
+    /// It is assumed that Portail can discuss with that UNIX domain socket.
+    pub ssh_agent_socket_path: PathBuf,
 }
 
 #[serde_with::serde_as]
@@ -86,6 +127,9 @@ pub struct Settings {
     /// Settings for the local RPC (authorization).
     #[serde(default)]
     pub rpc: RPCSettings,
+
+    /// Settings for the outbound SSH connections
+    pub ssh: Option<SSHSettings>,
 }
 
 pub fn init(config_path: &Path) -> Settings {

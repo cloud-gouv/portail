@@ -1,5 +1,6 @@
 use crate::proxy::context::InitialRequestContext;
 use crate::proxy::protocol_detect::{ALPN_H2, ALPN_HTTP1_1};
+use crate::proxy::ssh::{proxy_via_ssh, SSHProxyError};
 use crate::{
     config::{BackendSettings, Settings},
     proxy::{client_tls, ProxyError},
@@ -17,6 +18,7 @@ use hyper::{
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use std::io;
 use std::sync::Arc;
+use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
@@ -239,9 +241,10 @@ async fn handle_http_request(
     for backend in backends {
         debug!(
             "Backend {} selected for HTTP CONNECT to {}",
-            backend.target_address, final_address
+            backend, final_address
         );
         match connect_to_http_proxy_backend(
+            &settings,
             backend,
             &final_address,
             state.clone(),
@@ -256,7 +259,7 @@ async fn handle_http_request(
             Err(err) => {
                 debug!(
                     "Backend {} failed for HTTP CONNECT: {}, trying next",
-                    backend.target_address, err
+                    backend, err
                 );
             }
         }
@@ -305,6 +308,14 @@ fn empty_body() -> BoxBody<Bytes, hyper::Error> {
         .boxed()
 }
 
+#[derive(Debug, Error)]
+pub enum BackendConnectError {
+    #[error("IO: {0}")]
+    IO(#[from] io::Error),
+    #[error("SSH: {0}")]
+    SSH(#[from] SSHProxyError),
+}
+
 /// Send CONNECT and return the stream on 2xx response
 /// Ref: https://github.com/hyperium/hyper/blob/master/examples/client.rs
 ///
@@ -313,41 +324,52 @@ fn empty_body() -> BoxBody<Bytes, hyper::Error> {
 /// - Client HTTP/2 → [h2, http/1.1]
 /// When upstream is plain TCP, HTTP/1.1 is used.
 async fn connect_to_http_proxy_backend(
+    settings: &Settings,
     backend: &BackendSettings,
     final_address: &str,
     state: Arc<RwLock<State>>,
     inbound_protocol: &InboundHttpProtocol,
-) -> io::Result<OutboundStream> {
-    let socket = TcpStream::connect(backend.target_address).await?;
+) -> Result<OutboundStream, BackendConnectError> {
+    let alpn_protocols = match inbound_protocol {
+        InboundHttpProtocol::Http1 => vec![ALPN_HTTP1_1.to_vec(), ALPN_H2.to_vec()],
+        InboundHttpProtocol::Http2 => vec![ALPN_H2.to_vec(), ALPN_HTTP1_1.to_vec()],
+    };
 
-    let (stream, use_http2): (OutboundStream, bool) = if backend.identity_aware {
-        debug!(
-            "Backend is identity-aware, establishing a TLS connection to {}",
-            backend.target_address
-        );
-        let backend_host = backend.target_address.ip().to_string();
-        let domain = ServerName::try_from(backend_host)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    let (stream, use_http2): (OutboundStream, bool) = match backend {
+        BackendSettings::IdentityAware { target_address } => {
+            let socket = TcpStream::connect(target_address).await?;
+            debug!(
+                "Backend is identity-aware, establishing a TLS connection to {}",
+                target_address
+            );
+            let backend_host = target_address.ip().to_string();
+            let domain = ServerName::try_from(backend_host)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+            let tls =
+                client_tls::connect_using_tls_auth(socket, domain, state, alpn_protocols).await?;
+            let use_http2 = match tls {
+                tokio_rustls::TlsStream::Client(ref client) => client
+                    .get_ref()
+                    .1
+                    .alpn_protocol()
+                    .map(|p| p.as_ref() as &[u8] == ALPN_H2)
+                    .unwrap_or(false),
+                _ => false,
+            };
 
-        let alpn_protocols = match inbound_protocol {
-            InboundHttpProtocol::Http1 => vec![ALPN_HTTP1_1.to_vec(), ALPN_H2.to_vec()],
-            InboundHttpProtocol::Http2 => vec![ALPN_H2.to_vec(), ALPN_HTTP1_1.to_vec()],
-        };
-        let tls = client_tls::connect_using_tls_auth(socket, domain, state, alpn_protocols).await?;
-
-        let use_http2 = match tls {
-            tokio_rustls::TlsStream::Client(ref client) => client
-                .get_ref()
-                .1
-                .alpn_protocol()
-                .map(|p| p.as_ref() as &[u8] == ALPN_H2)
-                .unwrap_or(false),
-            _ => false,
-        };
-
-        (Box::new(tls), use_http2)
-    } else {
-        (Box::new(socket), false)
+            (Box::new(tls), use_http2)
+        }
+        BackendSettings::Direct { target_address } => {
+            let socket = TcpStream::connect(target_address).await?;
+            (Box::new(socket), false)
+        }
+        BackendSettings::SSH {
+            target_address,
+            proxy_host,
+        } => {
+            let stream = proxy_via_ssh(settings.ssh.as_ref(), &proxy_host, target_address).await?;
+            (Box::new(stream), false)
+        }
     };
 
     let io = TokioIo::new(stream);
@@ -381,13 +403,13 @@ async fn connect_to_http_proxy_backend(
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
         if !response.status().is_success() {
-            return Err(io::Error::new(
+            return Err(BackendConnectError::IO(io::Error::new(
                 io::ErrorKind::ConnectionRefused,
                 format!(
                     "HTTP proxy CONNECT failed with status {}",
                     response.status()
                 ),
-            ));
+            )));
         }
 
         let upgraded = hyper::upgrade::on(&mut response)
@@ -414,13 +436,13 @@ async fn connect_to_http_proxy_backend(
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
         if !response.status().is_success() {
-            return Err(io::Error::new(
+            return Err(BackendConnectError::IO(io::Error::new(
                 io::ErrorKind::ConnectionRefused,
                 format!(
                     "HTTP proxy CONNECT failed with status {}",
                     response.status()
                 ),
-            ));
+            )));
         }
 
         let upgraded = hyper::upgrade::on(&mut response)
