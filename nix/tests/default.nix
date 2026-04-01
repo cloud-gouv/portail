@@ -97,6 +97,30 @@ let
     networking.firewall.allowedTCPPorts = [ 8080 ];
   };
 
+  mkTinyproxyNode = { address }: { nodes, ... }: {
+    networking.interfaces.eth1.ipv4.addresses = [
+      {
+        inherit address;
+        prefixLength = 24;
+      }
+    ];
+
+    networking.hosts."${nodes.corp-server.networking.primaryIPAddress}" =
+      [ "hello.corp.example.com" "bad.corp.example.com" ];
+
+    services.tinyproxy = {
+      enable = true;
+      settings = {
+        Port = 8080;
+        Listen = "0.0.0.0";
+        Allow = [ "192.168.1.0/24" ];
+        ConnectPort = [ 80 443 ];
+      };
+    };
+
+    networking.firewall.allowedTCPPorts = [ 8080 ];
+  };
+
   portailEnv = {
     systemd.services.portail.environment = {
       RUST_LOG = "portail=debug";
@@ -365,6 +389,98 @@ in
       ), "Unexpected result from the web service: {}".format(json.dumps(result))
     '';
   };
+
+  # This tests Portail connecting to tinyproxy as an upstream (uses HTTP CONNECT).
+  tinyproxy-upstream =
+    let
+      upstreamIp = "192.168.1.51";
+    in
+    pkgs.testers.nixosTest {
+      name = "tinyproxy-upstream";
+      nodes = {
+        tinyproxy = mkTinyproxyNode { address = upstreamIp; };
+
+        corp-server = mkServiceNode { };
+        node = { nodes, ... }: {
+          imports = [ ../module.nix portailEnv ];
+          networking.hosts."${nodes.corp-server.networking.primaryIPAddress}" =
+            [ "hello.corp.example.com" "bad.corp.example.com" ];
+          networking.interfaces.eth1.ipv4.addresses = [
+            {
+              address = "192.168.1.100";
+              prefixLength = 24;
+            }
+          ];
+          security.pki.certificates = [
+            (builtins.readFile certs.workloadCerts.ca.cert)
+          ];
+          services.portail = {
+            enable = true;
+            enableAtBoot = true;
+            settings = {
+              default-backend = "default";
+              backends.default = {
+                target-address = "${upstreamIp}:8080";
+              };
+            };
+            acl.filter.rules = [
+              ''
+                policy hello {
+                  when host =~ "hello.corp.example.com|192.168.1.1" and (port == 80 or port == 443)
+                  action allow
+                }
+              ''
+            ];
+          };
+        };
+      };
+      testScript = ''
+        import json
+
+        start_all()
+
+        node.wait_for_unit("multi-user.target")
+        node.wait_for_unit("portail.service")
+
+        upstream_ip = "${upstreamIp}"
+
+        # Wait for the server to be ready.
+        corp_server.wait_for_unit("multi-user.target")
+
+        # Wait for NGINX to be ready.
+        corp_server.wait_for_open_port(80)
+        corp_server.wait_for_open_port(443)
+
+        # Wait for tinyproxy to be ready.
+        tinyproxy.wait_for_unit("tinyproxy.service")
+        tinyproxy.wait_for_open_port(8080)
+
+        # Wait for portail to open its port.
+        node.wait_for_open_port(8080)
+
+        # HTTP CONNECT: client -> portail -> tinyproxy -> corp-server
+        result = json.loads(node.succeed(
+          "curl --fail --proxytunnel --proxy http://127.0.0.1:8080 http://hello.corp.example.com"
+        ))
+        assert (
+          result['service'] == 'hello.corp'
+          and result['remote_addr'] == upstream_ip
+          and not result['tls']
+          and result['protocol'] == 'HTTP/1.1'
+        ), "Unexpected result from the web service: {}".format(json.dumps(result))
+
+        # HTTPS via CONNECT through tinyproxy
+        result = json.loads(node.succeed(
+          "curl --fail --proxy http://127.0.0.1:8080 https://hello.corp.example.com"
+        ))
+        assert (
+          result['service'] == 'hello.corp'
+          and result['remote_addr'] == upstream_ip
+          and result['tls']
+          and result['protocol'] == 'HTTP/2.0'
+        ), "Unexpected result from the web service: {}".format(json.dumps(result))
+      '';
+    };
 
   # curl -> portail -> portail (hop) -> corp-server
   portail-upstream = pkgs.testers.nixosTest {
