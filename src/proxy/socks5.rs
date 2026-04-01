@@ -1,19 +1,18 @@
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    str::FromStr,
     sync::Arc,
 };
 
 use fast_socks5::{
-    client::Socks5Stream, server::Socks5ServerProtocol, util::target_addr::TargetAddr, ReplyError,
-    Socks5Command, SocksError,
+    ReplyError, Socks5Command, SocksError, client::Socks5Stream, server::Socks5ServerProtocol,
+    util::target_addr::TargetAddr,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpStream,
     sync::RwLock,
 };
-use tokio_rustls::{rustls::pki_types::ServerName, TlsStream};
+use tokio_rustls::{TlsStream, rustls::pki_types::ServerName};
 use tracing::{debug, info, warn};
 
 use crate::{
@@ -22,6 +21,7 @@ use crate::{
     state::State,
 };
 
+#[allow(clippy::large_enum_variant)]
 pub enum OutboundSock5Stream {
     Tls(Socks5Stream<TlsStream<TcpStream>>),
     Plain(Socks5Stream<TcpStream>),
@@ -77,13 +77,13 @@ pub async fn route_to_backend<S: AsyncRead + Unpin + AsyncWrite>(
     Ok(())
 }
 
-pub async fn serve_socks5<'s, S: AsyncRead + Unpin + AsyncWrite>(
+pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
     opts: Arc<Settings>,
     state: Arc<RwLock<State>>,
     ctx: InitialRequestContext,
     socket: S,
 ) -> Result<(), SocksError> {
-    let mut ctx = ctx.into_local();
+    let mut ctx = ctx.as_local();
     let should_resolve_dns: bool = state.read().await.default_backend.is_none();
 
     let (proto, cmd, target_addr) = Socks5ServerProtocol::accept_no_auth(socket)
@@ -200,14 +200,15 @@ pub async fn serve_socks5<'s, S: AsyncRead + Unpin + AsyncWrite>(
         backends.append(&mut recommended_routes);
     }
 
-    if backends.is_empty() {
-        if let Some(ref backend_id) = state.read().await.default_backend {
-            let backend = opts.backends.get(backend_id).expect(&format!(
-                "BUG: default backend {backend_id} went away from settings"
-            ));
+    if backends.is_empty()
+        && let Some(ref backend_id) = state.read().await.default_backend
+    {
+        let backend = opts
+            .backends
+            .get(backend_id)
+            .unwrap_or_else(|| panic!("BUG: default backend {backend_id} went away from settings"));
 
-            backends.push(backend);
-        }
+        backends.push(backend);
     }
 
     backends.reverse();

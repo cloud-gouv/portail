@@ -2,16 +2,16 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use regex::Regex;
+use winnow::ModalResult;
 use winnow::ascii::{digit1, multispace1};
 use winnow::combinator::{alt, cut_err, dispatch, fail, opt, preceded, repeat, separated};
 use winnow::error::{
     ContextError, ErrMode, FromExternalError, ParseError, StrContext, StrContextValue,
 };
 use winnow::token::take;
-use winnow::ModalResult;
 use winnow::{
-    ascii::multispace0, combinator::delimited, error::ParserError, token::take_while, Parser,
-    Result,
+    Parser, Result, ascii::multispace0, combinator::delimited, error::ParserError,
+    token::take_while,
 };
 
 use crate::acl::ast::{
@@ -65,7 +65,7 @@ fn boolean(input: &mut &str) -> ModalResult<bool> {
     .parse_next(input)
 }
 
-fn dotted_identifier<'s>(input: &mut &'s str) -> ModalResult<Vec<String>> {
+fn dotted_identifier(input: &mut &str) -> ModalResult<Vec<String>> {
     (identifier, repeat(1.., preceded(".", identifier)))
         .map(|(first, rest): (_, Vec<_>)| {
             let mut path = Vec::with_capacity(1 + rest.len());
@@ -92,7 +92,7 @@ fn comparator(input: &mut &str) -> ModalResult<Comparator> {
     .parse_next(input)
 }
 
-fn operand<'s>(input: &mut &'s str) -> ModalResult<Operand> {
+fn operand(input: &mut &str) -> ModalResult<Operand> {
     alt((
         boolean.map(Operand::Boolean),
         number.map(Operand::Number),
@@ -115,14 +115,12 @@ fn parse_set_string(input: &mut &str) -> ModalResult<HashSet<String>> {
     .parse_next(input)
 }
 
-fn parse_regex<'s>(input: &mut &'s str) -> ModalResult<Regex> {
+fn parse_regex(input: &mut &str) -> ModalResult<Regex> {
     let raw_regex = string_literal.parse_next(input)?;
 
     match Regex::new(raw_regex) {
         Ok(re) => Ok(re),
-        Err(err) => {
-            return Err(ErrMode::Cut(ContextError::from_external_error(input, err)));
-        }
+        Err(err) => Err(ErrMode::Cut(ContextError::from_external_error(input, err))),
     }
 }
 
@@ -202,14 +200,14 @@ fn expression(input: &mut &str) -> ModalResult<Expression> {
     or_expression(input)
 }
 
-fn policy_when_statement<'s>(input: &mut &'s str) -> ModalResult<PolicyAttribute> {
+fn policy_when_statement(input: &mut &str) -> ModalResult<PolicyAttribute> {
     expression
         .map(PolicyAttribute::When)
         .context(StrContext::Label("policy when statement"))
         .parse_next(input)
 }
 
-fn require_statement<'s>(input: &mut &'s str) -> ModalResult<PolicyAttribute> {
+fn require_statement(input: &mut &str) -> ModalResult<PolicyAttribute> {
     expression
         .map(PolicyAttribute::Require)
         .context(StrContext::Label("require statement"))
@@ -253,7 +251,7 @@ where
     delimited("{", ws(parser), cut_err("}"))
 }
 
-fn action_attribute<'s>(input: &mut &'s str) -> ModalResult<PolicyAttribute> {
+fn action_attribute(input: &mut &str) -> ModalResult<PolicyAttribute> {
     // FIXME: move all alt(braced_body(T), T) to dispatch! { take(1usize); "{" => braced_body(T), _
     // => T } rather.
     ws(alt((
@@ -266,7 +264,7 @@ fn action_attribute<'s>(input: &mut &'s str) -> ModalResult<PolicyAttribute> {
     .parse_next(input)
 }
 
-fn policy_when_attribute<'s>(input: &mut &'s str) -> ModalResult<PolicyAttribute> {
+fn policy_when_attribute(input: &mut &str) -> ModalResult<PolicyAttribute> {
     ws(alt((
         braced_body(cut_err(policy_when_statement)),
         policy_when_statement,
@@ -276,7 +274,7 @@ fn policy_when_attribute<'s>(input: &mut &'s str) -> ModalResult<PolicyAttribute
     .parse_next(input)
 }
 
-fn require_attribute<'s>(input: &mut &'s str) -> ModalResult<PolicyAttribute> {
+fn require_attribute(input: &mut &str) -> ModalResult<PolicyAttribute> {
     ws(alt((
         braced_body(cut_err(require_statement)),
         require_statement,
@@ -285,7 +283,7 @@ fn require_attribute<'s>(input: &mut &'s str) -> ModalResult<PolicyAttribute> {
     .parse_next(input)
 }
 
-fn policy_attribute<'s>(input: &mut &'s str) -> ModalResult<PolicyAttribute> {
+fn policy_attribute(input: &mut &str) -> ModalResult<PolicyAttribute> {
     dispatch! { take(1usize);
         "w" => preceded("hen ", policy_when_attribute),
         "r" => preceded("equire ", require_attribute),

@@ -7,7 +7,7 @@ use std::path::Path;
 
 pub use ast::Action;
 pub use evaluator::{EvaluationContext, OwnedEvaluationContext};
-pub use hir::{ast_to_hir, ACLHir};
+pub use hir::{ACLHir, ast_to_hir};
 pub use parser::parse_into_ast;
 use thiserror::Error;
 
@@ -38,10 +38,7 @@ pub fn load_rules_from_file<P: AsRef<Path>>(
     load_rules_from_str(&acl_contents, settings)
 }
 
-pub fn load_rules_from_str<'s>(
-    contents: &'s str,
-    settings: &Settings,
-) -> Result<ACLRules, LoadError> {
+pub fn load_rules_from_str(contents: &str, settings: &Settings) -> Result<ACLRules, LoadError> {
     let ast = parse_into_ast(contents)?;
     let hir = ast_to_hir(ast, &settings.backends)?;
 

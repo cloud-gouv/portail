@@ -35,10 +35,7 @@ pub async fn connect_using_tls_auth<IO: AsyncRead + AsyncWrite + Unpin>(
                 .with_root_certificates(root_store)
                 .with_no_client_auth(),
             (None, Some(_)) => {
-                return Err(tokio::io::Error::new(
-                    tokio::io::ErrorKind::Other,
-                    "Client auth set without roots",
-                ));
+                return Err(tokio::io::Error::other("Client auth set without roots"));
             }
             // TODO: configure with default webpki
             (None, None) => panic!("webpki setup"),

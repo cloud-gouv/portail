@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, collections::HashSet, net::IpAddr, ops::Deref, path::PathBuf};
+use std::{collections::HashSet, path::PathBuf};
 
 use http::Uri;
 use regex::Regex;
@@ -76,6 +76,7 @@ pub enum ConcreteOperand<'s> {
     Set(HashSet<&'s str>),
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum OwnedConcreteOperand {
     String(String),
@@ -101,9 +102,13 @@ impl OwnedConcreteOperand {
 pub enum ComparisonError<'s> {
     #[error("Cannot compare value '{0:?}' of type '{1}' with value '{2:?}' of type '{3}'")]
     TypeMismatch(ConcreteOperand<'s>, &'s str, ConcreteOperand<'s>, &'s str),
-    #[error("Regex comparison can only take place with strings, got '{0:?}' of type '{1}' and '{2:?}' of type '{3}'")]
+    #[error(
+        "Regex comparison can only take place with strings, got '{0:?}' of type '{1}' and '{2:?}' of type '{3}'"
+    )]
     InvalidRegexOperands(ConcreteOperand<'s>, &'s str, ConcreteOperand<'s>, &'s str),
-    #[error("Ordering comparison can only take place with numbers, got '{0:?}' of type '{1}' and '{2:?}' of type '{3}'")]
+    #[error(
+        "Ordering comparison can only take place with numbers, got '{0:?}' of type '{1}' and '{2:?}' of type '{3}'"
+    )]
     InvalidOrderOperands(ConcreteOperand<'s>, &'s str, ConcreteOperand<'s>, &'s str),
 }
 
@@ -118,6 +123,7 @@ impl<'s> ConcreteOperand<'s> {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     pub fn compare(lhs: Self, comp: &Comparator, rhs: Self) -> Result<bool, ComparisonError<'s>> {
         use Comparator::*;
         use ConcreteOperand::*;

@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::{error::Error, fmt::Display};
-use zlink::{proxy, ReplyError};
+use zlink::{ReplyError, proxy};
 
 #[derive(Debug, Clone, PartialEq, ReplyError, zlink::introspect::ReplyError)]
 #[zlink(interface = "fr.gouv.portail.Control")]
@@ -28,7 +28,7 @@ impl Display for ControlError {
                     "Backend `{}` was not found, available backends are {}",
                     provided_backend,
                     available_backends
-                        .into_iter()
+                        .iter()
                         .map(|s| format!("`{}`", s))
                         .collect::<Vec<_>>()
                         .join(", ")

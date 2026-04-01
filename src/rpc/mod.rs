@@ -6,7 +6,7 @@ use crate::{
 use std::sync::Arc;
 use tokio::{net::UnixListener, sync::RwLock};
 use tracing::info;
-use zlink::{connection::socket::FetchPeerCredentials, service, unix::Listener, Server};
+use zlink::{Server, connection::socket::FetchPeerCredentials, service, unix::Listener};
 
 pub mod fr_gouv_portail_control;
 

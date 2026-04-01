@@ -1,10 +1,12 @@
 use std::{fmt::Display, net::SocketAddr};
 
+#[allow(clippy::large_enum_variant)]
 pub enum InboundStream {
     TcpStream(tokio::net::TcpStream),
     TlsStream(tokio_rustls::TlsStream<tokio::net::TcpStream>),
 }
 
+#[allow(dead_code)]
 enum ProxyProtocol {
     Socks5,
     Http1,
@@ -60,6 +62,7 @@ pub struct InitialRequestContext {
 
 #[derive(Debug, Clone)]
 pub struct LocalRequestContext<'s> {
+    #[allow(dead_code)]
     pub client_address: &'s SocketAddr,
     pub acl_ctx: crate::acl::EvaluationContext<'s>,
 }
@@ -72,7 +75,7 @@ impl InitialRequestContext {
         }
     }
 
-    pub fn into_local<'s>(&'s self) -> LocalRequestContext<'s> {
+    pub fn as_local<'s>(&'s self) -> LocalRequestContext<'s> {
         LocalRequestContext {
             client_address: &self.client_address,
             acl_ctx: self.acl_ctx.fork(),

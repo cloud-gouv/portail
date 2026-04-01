@@ -12,20 +12,23 @@ use crate::{
     config::BackendSettings,
 };
 
-/// These structures are useful to explain WHY we are denied.
+// These structures are useful to explain WHY we are denied.
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct ExpressionResult<'s> {
     pub expression: &'s Expression,
     pub result: Result<bool, String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct PolicyContext<'s> {
     pub policy_name: &'s str,
     pub when_results: Vec<ExpressionResult<'s>>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct RequireContext<'s> {
     pub policy_name: &'s str,
@@ -53,6 +56,7 @@ impl OwnedEvaluationContext {
         }
     }
 
+    #[allow(dead_code)]
     pub fn insert(&mut self, key: String, value: OwnedConcreteOperand) {
         self.variables.insert(key, value);
     }
@@ -65,6 +69,7 @@ impl OwnedEvaluationContext {
     }
 }
 
+#[allow(dead_code)]
 pub struct RequestAssessment<'s> {
     /// Which policy decided this assessment?
     policy: PolicyContext<'s>,
@@ -86,6 +91,7 @@ pub enum InterpretationError<'s> {
     ComparisonError(ComparisonError<'s>),
 }
 
+#[allow(clippy::result_large_err)]
 impl<'s> EvaluationContext<'s> {
     pub fn insert(&mut self, key: &'s str, value: ConcreteOperand<'s>) {
         self.local_variables.insert(key, value);
@@ -94,7 +100,7 @@ impl<'s> EvaluationContext<'s> {
     pub fn resolve_variable(&self, name: &str) -> Option<ConcreteOperand<'s>> {
         self.local_variables
             .get(name)
-            .map(|co| co.clone())
+            .cloned()
             .or_else(|| self.parent_variables.get(name).map(|var| var.as_ref()))
     }
 
@@ -133,18 +139,18 @@ impl<'s> EvaluationContext<'s> {
     fn evaluate_expression(&self, expr: &'s Expression) -> Result<bool, InterpretationError<'s>> {
         Ok(match expr {
             Expression::Or(lhs, rhs) => {
-                self.evaluate_expression(&*lhs)? || self.evaluate_expression(&*rhs)?
+                self.evaluate_expression(lhs)? || self.evaluate_expression(rhs)?
             }
             Expression::And(lhs, rhs) => {
-                self.evaluate_expression(&*lhs)? && self.evaluate_expression(&*rhs)?
+                self.evaluate_expression(lhs)? && self.evaluate_expression(rhs)?
             }
-            Expression::Not(operand) => !self.evaluate_expression(&*operand)?,
-            Expression::Group(operand) => self.evaluate_expression(&*operand)?,
+            Expression::Not(operand) => !self.evaluate_expression(operand)?,
+            Expression::Group(operand) => self.evaluate_expression(operand)?,
             Expression::Comparison(lhs, comp, rhs) => {
                 let lhs: ConcreteOperand = self.concretize_operand(lhs)?;
                 let rhs: ConcreteOperand = self.concretize_operand(rhs)?;
 
-                ConcreteOperand::compare(lhs, &comp, rhs)
+                ConcreteOperand::compare(lhs, comp, rhs)
                     .map_err(InterpretationError::ComparisonError)?
             }
         })
@@ -163,7 +169,7 @@ impl<'s> EvaluationContext<'s> {
         // can freely panic here if it's not the way intended.
         for entry in &rules.routes {
             let active = if let Some(ref when_expr) = entry.when {
-                self.evaluate_expression(&when_expr)?
+                self.evaluate_expression(when_expr)?
             } else {
                 true
             };
@@ -193,7 +199,7 @@ impl<'s> EvaluationContext<'s> {
     ) -> Result<RequestAssessment<'s>, InterpretationError<'s>> {
         for entry in &rules.policies {
             let active = if let Some(ref when_expr) = entry.when {
-                self.evaluate_expression(&when_expr)?
+                self.evaluate_expression(when_expr)?
             } else {
                 true
             };
@@ -204,7 +210,7 @@ impl<'s> EvaluationContext<'s> {
 
             // Evaluate whether we fulfill the `require` conditions.
             let pass_requirements = if let Some(ref require_expr) = entry.require {
-                self.evaluate_expression(&require_expr)?
+                self.evaluate_expression(require_expr)?
             } else {
                 true
             };
@@ -250,9 +256,9 @@ mod tests {
     #[cfg(test)]
     mod tests {
         use crate::acl::{
+            Action, EvaluationContext, OwnedEvaluationContext,
             ast::{Comparator, ConcreteOperand, Expression, Operand},
             hir::{ACLHir, PolicyDefinition},
-            Action, EvaluationContext, OwnedEvaluationContext,
         };
 
         #[test]
@@ -351,10 +357,10 @@ mod tests {
 
         #[test]
         fn test_in_operator() {
-            use crate::acl::ast::{Comparator, ConcreteOperand, Expression, Operand};
-            use crate::acl::hir::{ACLHir, PolicyDefinition};
             use crate::acl::Action;
             use crate::acl::EvaluationContext;
+            use crate::acl::ast::{Comparator, ConcreteOperand, Expression, Operand};
+            use crate::acl::hir::{ACLHir, PolicyDefinition};
 
             let hir = ACLHir {
                 routes: vec![],
@@ -389,10 +395,10 @@ mod tests {
 
     #[test]
     fn test_regex_match_operator() {
-        use crate::acl::ast::{Comparator, ConcreteOperand, Expression, Operand};
-        use crate::acl::hir::{ACLHir, PolicyDefinition};
         use crate::acl::Action;
         use crate::acl::EvaluationContext;
+        use crate::acl::ast::{Comparator, ConcreteOperand, Expression, Operand};
+        use crate::acl::hir::{ACLHir, PolicyDefinition};
 
         let hir = ACLHir {
             routes: vec![],
@@ -421,8 +427,8 @@ mod tests {
 
     #[test]
     fn test_fail_close_missing_policies() {
-        use crate::acl::hir::ACLHir;
         use crate::acl::EvaluationContext;
+        use crate::acl::hir::ACLHir;
 
         let hir = ACLHir {
             routes: vec![],
