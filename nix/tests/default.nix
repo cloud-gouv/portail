@@ -411,6 +411,9 @@ in
               prefixLength = 24;
             }
           ];
+          security.pki.certificates = [
+            (builtins.readFile certs.workloadCerts.ca.cert)
+          ];
           services.portail = {
             enable = true;
             enableAtBoot = true;
@@ -423,7 +426,7 @@ in
             acl.filter.rules = [
               ''
                 policy hello {
-                  when host =~ "hello.corp.example.com|192.168.1.1" and port == 80
+                  when host =~ "hello.corp.example.com|192.168.1.1" and (port == 80 or port == 443)
                   action allow
                 }
               ''
@@ -446,6 +449,7 @@ in
 
         # Wait for NGINX to be ready.
         corp_server.wait_for_open_port(80)
+        corp_server.wait_for_open_port(443)
 
         # Wait for tinyproxy to be ready.
         tinyproxy.wait_for_unit("tinyproxy.service")
@@ -463,6 +467,17 @@ in
           and result['remote_addr'] == upstream_ip
           and not result['tls']
           and result['protocol'] == 'HTTP/1.1'
+        ), "Unexpected result from the web service: {}".format(json.dumps(result))
+
+        # HTTPS via CONNECT through tinyproxy
+        result = json.loads(node.succeed(
+          "curl --fail --proxy http://127.0.0.1:8080 https://hello.corp.example.com"
+        ))
+        assert (
+          result['service'] == 'hello.corp'
+          and result['remote_addr'] == upstream_ip
+          and result['tls']
+          and result['protocol'] == 'HTTP/2.0'
         ), "Unexpected result from the web service: {}".format(json.dumps(result))
       '';
     };
