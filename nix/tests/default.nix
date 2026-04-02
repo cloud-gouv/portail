@@ -684,12 +684,29 @@ in
         networking.hosts."${nodes.corp-server.networking.primaryIPAddress}" =
           [ "hello.corp.example.com" "bad.corp.example.com" ];
 
+        users.groups.portailers = {};
+        users.groups.heloise = {};
+        users.users.alice = {
+          isNormalUser = true;
+          # supplementary group, not main group.
+          extraGroups = [ "portailers" ];
+        };
+        users.users.heloise = {
+          isNormalUser = true;
+          # main group.
+          group = "heloise";
+        };
+        users.users.attacker = {
+          isNormalUser = true;
+        };
+
         services.portail = {
           enable = true;
           enableAtBoot = true;
 
           settings = {
             default-backend = "alpha";
+            rpc.trusted-groups = [ "heloise" "portailers" ];
             backends = {
               alpha = {
                 target-address =
@@ -737,10 +754,33 @@ in
       beta_ip = "192.168.1.61"
       self_ip = "192.168.1.100"
 
-      def rpc(*flags):
-        return json.loads(node.succeed(
-          "portail rpc --json " + ' '.join(flags)
-        ))
+      def rpc(*flags, user="root", fail=False):
+        sudo_primitive = f"sudo -u {user} " if user != "root" else ""
+        fun = node.succeed if not fail else node.fail
+        out = fun(
+          "{}portail rpc --json ".format(sudo_primitive) + ' '.join(flags)
+        )
+
+        try:
+          return json.loads(out)
+        except Exception as e:
+          if fail:
+            print(f'Expected exception: {e}')
+          else:
+            raise e
+
+      # Verify that RPC permissions are set correctly.
+      # Everyone can read, including the attacker.
+      # Only trusted groups can change backends.
+
+      for user in ("root", "alice", "heloise", "attacker"):
+        assert rpc("print-current-backend", user=user)["backend_id"] == "alpha", f"Expected valid value for current backend as {user}"
+
+      for user in ("root", "alice", "heloise"):
+        assert rpc("set-default-backend", "alpha", user=user).get("success", False), f"Unable to switch the default backend as trusted user {user}"
+
+      for user in ("attacker",):
+        assert rpc("set-default-backend", "beta", user=user, fail=True) is None, "Unexpectedly was able to switch the default backend as untrusted user"
 
       # Verify the current default backend is alpha
       assert rpc("print-current-backend")["backend_id"] == "alpha", "Expected current backend to alpha"
