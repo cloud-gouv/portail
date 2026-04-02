@@ -15,6 +15,9 @@ rustPlatform.buildRustPackage {
   };
   cargoLock = {
     lockFile = ../Cargo.lock;
+    outputHashes = {
+      "zlink-0.4.1" = "sha256-yi2fJk9Uia996ht2KyKAzKPlXLQa7oXHvqiCdw/P7mQ=";
+    };
   };
 
   meta = {
