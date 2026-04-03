@@ -145,17 +145,17 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
     let mut backends: Vec<&BackendSettings> = Vec::with_capacity(1);
     // We evaluate first whether we are allowed then we evaluate routes.
     let acl = &state.read().await.acl_rules;
-    let assessment = ctx.acl_ctx.evaluate_request(&acl.hir);
-    if let Err(failure) = assessment {
-        proto.reply_error(&ReplyError::GeneralFailure).await?;
-        warn!(
-            "Failed to evaluate a request: {} (Context: {:#?})",
-            failure, ctx
-        );
-        return Ok(());
-    }
-
-    let assessment = assessment.unwrap();
+    let assessment = match ctx.acl_ctx.evaluate_request(&acl.hir) {
+        Ok(assessment) => assessment,
+        Err(failure) => {
+            proto.reply_error(&ReplyError::GeneralFailure).await?;
+            warn!(
+                "Failed to evaluate a request: {} (Context: {:#?})",
+                failure, ctx
+            );
+            return Ok(());
+        }
+    };
 
     match assessment.action {
         // FIXME: render the deny template if there's one.
@@ -183,17 +183,17 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
         _ => {}
     }
 
-    let recommended_routes = ctx.acl_ctx.evaluate_routes(&acl.hir);
-    if let Err(failure) = recommended_routes {
-        proto.reply_error(&ReplyError::GeneralFailure).await?;
-        warn!(
-            "Failed to evaluate routes for a request: {} (Context: {:#?})",
-            failure, ctx
-        );
-        return Ok(());
-    }
-
-    let mut recommended_routes = recommended_routes.unwrap();
+    let mut recommended_routes = match ctx.acl_ctx.evaluate_routes(&acl.hir) {
+        Ok(routes) => routes,
+        Err(failure) => {
+            proto.reply_error(&ReplyError::GeneralFailure).await?;
+            warn!(
+                "Failed to evaluate routes for a request: {} (Context: {:#?})",
+                failure, ctx
+            );
+            return Ok(());
+        }
+    };
 
     if !recommended_routes.is_empty() {
         backends.append(&mut recommended_routes);
@@ -238,26 +238,20 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
     // If we get there, this means that we did not have any backend at all.
     {
         debug!("No backend, terminating the connection ourself");
-        match cmd {
-            Socks5Command::TCPConnect => {
+        match (cmd, opts.public_address) {
+            (Socks5Command::TCPConnect, _) => {
                 fast_socks5::server::run_tcp_proxy(
                     proto,
                     &final_addr,
-                    opts.request_timeout.to_std().unwrap(),
+                    opts.request_timeout,
                     opts.tcp_nodelay,
                 )
                 .await?;
             }
 
-            Socks5Command::UDPAssociate if opts.public_address.is_some() => {
-                fast_socks5::server::run_udp_proxy(
-                    proto,
-                    &final_addr,
-                    None,
-                    opts.public_address.unwrap(),
-                    None,
-                )
-                .await?;
+            (Socks5Command::UDPAssociate, Some(public_address)) => {
+                fast_socks5::server::run_udp_proxy(proto, &final_addr, None, public_address, None)
+                    .await?;
             }
 
             _ => {

@@ -173,18 +173,18 @@ async fn handle_http_request(
 
     // TODO: how much header information should we render available?
 
-    let assessment = ctx.acl_ctx.evaluate_request(&acl.hir);
-    if let Err(failure) = assessment {
-        let mut resp = Response::new(empty_body());
-        warn!(
-            "Failed to evaluate a request: {} (Context: {:#?})",
-            failure, ctx
-        );
-        *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-        return Ok(resp);
-    }
-
-    let assessment = assessment.unwrap();
+    let assessment = match ctx.acl_ctx.evaluate_request(&acl.hir) {
+        Ok(assessment) => assessment,
+        Err(failure) => {
+            let mut resp = Response::new(empty_body());
+            warn!(
+                "Failed to evaluate a request: {} (Context: {:#?})",
+                failure, ctx
+            );
+            *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+            return Ok(resp);
+        }
+    };
 
     match assessment.action {
         // FIXME: render the deny template if there's one.
@@ -206,17 +206,18 @@ async fn handle_http_request(
         _ => {}
     }
 
-    let recommended_routes = ctx.acl_ctx.evaluate_routes(&acl.hir);
-    if let Err(failure) = recommended_routes {
-        let mut resp = Response::new(empty_body());
-        warn!(
-            "Failed to evaluate a request: {} (Context: {:#?})",
-            failure, ctx
-        );
-        *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-        return Ok(resp);
-    }
-    let mut recommended_routes = recommended_routes.unwrap();
+    let mut recommended_routes = match ctx.acl_ctx.evaluate_routes(&acl.hir) {
+        Ok(routes) => routes,
+        Err(failure) => {
+            let mut resp = Response::new(empty_body());
+            warn!(
+                "Failed to evaluate a request: {} (Context: {:#?})",
+                failure, ctx
+            );
+            *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+            return Ok(resp);
+        }
+    };
 
     if !recommended_routes.is_empty() {
         backends.append(&mut recommended_routes);
