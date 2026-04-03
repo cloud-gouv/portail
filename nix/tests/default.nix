@@ -560,6 +560,102 @@ in
     '';
   };
 
+  # curl -> portail -(TLS)-> portail (hop) -> corp-server
+  #
+  # Block any direct TCP from first portail to corp.
+  # This blocks the portail fallback path (direct connection).
+  #
+  portail-identity-aware-upstream =
+    let
+      upstreamId = "192.168.1.60";
+    in
+    pkgs.testers.nixosTest {
+      name = "portail-identity-aware-upstream";
+      nodes = {
+        corp-server = mkServiceNode { };
+
+        portail-hop = { nodes, ... }@args: {
+          imports = [
+            (mkPortailNode { address = upstreamId; } args)
+            {
+              services.portail.settings.listener = {
+                tls-privkey = certs.proxyCerts.${portailDomain}.key;
+                tls-chain = certs.proxyCerts.${portailDomain}.cert;
+              };
+            }
+          ];
+        };
+
+        node = { nodes, ... }@args: {
+          imports = [
+            (mkPortailNode { address = "192.168.1.100"; } args)
+            (
+              { nodes, ... }:
+              {
+                # Prevent any direct TCP from this host to corp.
+                # This blocks the portail fallback path.
+                # We use REJECT instead of DROP to reduce test latency.
+                networking.firewall.extraCommands = ''
+                  iptables -I OUTPUT -p tcp -d ${nodes.corp-server.networking.primaryIPAddress} -j REJECT --reject-with tcp-reset
+                '';
+
+                security.pki.certificates = [
+                  (builtins.readFile certs.proxyCerts.ca.cert)
+                  (builtins.readFile certs.workloadCerts.ca.cert)
+                ];
+
+                services.portail.settings = {
+                  default-backend = "default";
+                  backends.default = {
+                    target-address = "${nodes.portail-hop.networking.primaryIPAddress}:8080";
+                    identity-aware = true;
+                  };
+                  listener = {
+                    # Trust anchor for verifying the upstream (hop) TLS server certificate.
+                    cacert-file = certs.proxyCerts.ca.cert;
+                  };
+                };
+              }
+            )
+          ];
+        };
+      };
+
+      testScript = ''
+        import json
+
+        start_all()
+
+        node.wait_for_unit("multi-user.target")
+        node.wait_for_unit("portail.service")
+
+        portail_hop.wait_for_unit("multi-user.target")
+        portail_hop.wait_for_unit("portail.service")
+
+        corp_server.wait_for_unit("multi-user.target")
+        corp_server.wait_for_open_port(443)
+
+        node.wait_for_open_port(8080)
+        portail_hop.wait_for_open_port(8080)
+
+        # The direct route is blocked, so the proxy cannot fallback.
+        node.fail(
+          "curl --fail --max-time 5 https://hello.corp.example.com/"
+        )
+
+        # Test HTTP CONNECT curl -> portail -(TLS)-> portail (hop) -> corp-server
+        result = json.loads(node.succeed(
+          "curl --fail --max-time 5 --proxy http://127.0.0.1:8080 https://hello.corp.example.com"
+        ))
+        assert (
+          result['service'] == 'hello.corp'
+          and result['remote_addr'] == "${upstreamId}"
+          and result['tls']
+          and result['protocol'] == 'HTTP/2.0'
+        ), "Unexpected result from the web service: {}".format(json.dumps(result))
+      '';
+    };
+
   portail-backend-dynamic-switching = pkgs.testers.nixosTest {
     name = "portail-multiple-backends";
     nodes = {
