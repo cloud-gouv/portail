@@ -12,7 +12,7 @@ use tokio::{
     net::TcpStream,
     sync::RwLock,
 };
-use tokio_rustls::{TlsStream, rustls::pki_types::ServerName};
+use tokio_rustls::TlsStream;
 use tracing::{debug, info, warn};
 
 use crate::{
@@ -37,8 +37,7 @@ pub async fn connect_to_backend(
 
     if backend.identity_aware {
         debug!("Backend is identity-aware, establishing a TLS connection to the backend first");
-        // TODO: remove the panic
-        let domain = ServerName::try_from(target_addr).unwrap();
+        let domain = backend.tls_server_name.clone();
         let target_socket = TcpStream::connect(backend.target_address).await?;
         let stream = crate::proxy::client_tls::connect_using_tls_auth(
             target_socket,

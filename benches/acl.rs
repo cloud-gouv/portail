@@ -4,7 +4,7 @@ use portail::{
         ACLRules, EvaluationContext, OwnedEvaluationContext, ast::ConcreteOperand, ast_to_hir,
         parser::parse_into_ast,
     },
-    config::BackendSettings,
+    config::{BackendSettings, ServerName},
 };
 use rand::RngExt;
 use std::{collections::HashMap, hint::black_box};
@@ -183,9 +183,11 @@ fn eval(host: &str, rules: ACLRules) {
 fn criterion_benchmark(c: &mut Criterion) {
     let sizes = ["small", "medium", "large"];
     let mut backends = HashMap::new();
+    let target_address = "1.1.1.1:443".parse().unwrap();
     let backend_setting = BackendSettings {
         identity_aware: false,
-        target_address: "1.1.1.1:443".parse().unwrap(),
+        target_address,
+        tls_server_name: ServerName::from(target_address.ip()),
     };
 
     for id in 1..=5 {

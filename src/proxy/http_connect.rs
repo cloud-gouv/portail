@@ -20,7 +20,6 @@ use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
-use tokio_rustls::rustls::pki_types::ServerName;
 use tracing::{debug, error, info, warn};
 
 /// This is a workaround for the restriction `only auto traits can be used as additional traits in a trait object`
@@ -327,9 +326,7 @@ async fn connect_to_http_proxy_backend(
             "Backend is identity-aware, establishing a TLS connection to {}",
             backend.target_address
         );
-        let backend_host = backend.target_address.ip().to_string();
-        let domain = ServerName::try_from(backend_host)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        let domain = backend.tls_server_name.clone();
 
         let alpn_protocols = match inbound_protocol {
             InboundHttpProtocol::Http1 => vec![ALPN_HTTP1_1.to_vec(), ALPN_H2.to_vec()],

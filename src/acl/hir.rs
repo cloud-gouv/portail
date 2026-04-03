@@ -192,7 +192,7 @@ mod tests {
     use super::*;
     use crate::acl::Action;
     use crate::acl::ast;
-    use crate::config::BackendSettings;
+    use crate::config::{BackendSettings, ServerName};
     use insta::assert_debug_snapshot;
     use std::collections::HashMap;
 
@@ -202,11 +202,13 @@ mod tests {
         let mut backends = HashMap::new();
 
         for id in ids {
+            let target_address = "1.1.1.1:443".parse().unwrap();
             backends.insert(
                 id.to_string(),
                 BackendSettings {
-                    target_address: "1.1.1.1:443".parse().unwrap(),
+                    target_address,
                     identity_aware: false,
+                    tls_server_name: ServerName::from(target_address.ip()),
                 },
             );
         }
