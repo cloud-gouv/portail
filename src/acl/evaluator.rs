@@ -496,15 +496,21 @@ mod tests {
     fn test_route_evaluation() {
         use crate::acl::hir::{ACLHir, RouteDefinition};
 
-        let backend1 = BackendSettings {
-            target_address: "1.1.1.1:443".parse().unwrap(),
-            identity_aware: false,
-            tls_server_name: None,
+        let backend1 = {
+            let target_address = "1.1.1.1:443".parse().unwrap();
+            BackendSettings {
+                target_address,
+                identity_aware: false,
+                tls_server_name: crate::config::ServerName::from(target_address.ip()),
+            }
         };
-        let backend2 = BackendSettings {
-            target_address: "1.1.1.2:443".parse().unwrap(),
-            identity_aware: false,
-            tls_server_name: None,
+        let backend2 = {
+            let target_address = "1.1.1.2:443".parse().unwrap();
+            BackendSettings {
+                target_address,
+                identity_aware: false,
+                tls_server_name: crate::config::ServerName::from(target_address.ip()),
+            }
         };
 
         let hir = ACLHir {

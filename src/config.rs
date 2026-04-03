@@ -5,20 +5,69 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+pub use tokio_rustls::rustls::pki_types::ServerName;
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(rename_all = "kebab-case")]
+#[derive(Debug, Clone)]
 pub struct BackendSettings {
     pub target_address: SocketAddr,
     /// Whether this backend requires a TLS connection with a client certificate.
-    #[serde(default)]
     pub identity_aware: bool,
     /// TLS server name for identity-aware outbound connections.
     ///
-    /// When unset, the IP address is used.
+    /// When omitted in config, the target address IP is used.
+    pub tls_server_name: ServerName<'static>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+struct BackendSettingsSerde {
+    target_address: SocketAddr,
     #[serde(default)]
-    pub tls_server_name: Option<String>,
+    identity_aware: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tls_server_name: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for BackendSettings {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = BackendSettingsSerde::deserialize(deserializer)?;
+        let tls_server_name = match s.tls_server_name {
+            Some(str) => ServerName::try_from(str)
+                .map_err(|e| de::Error::custom(format!("invalid tls_server_name: {e:?}")))?,
+            None => ServerName::from(s.target_address.ip()),
+        };
+
+        Ok(BackendSettings {
+            target_address: s.target_address,
+            identity_aware: s.identity_aware,
+            tls_server_name,
+        })
+    }
+}
+
+impl Serialize for BackendSettings {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let tls_default = ServerName::from(self.target_address.ip());
+        let tls_server_name = if self.tls_server_name == tls_default {
+            None
+        } else {
+            Some(self.tls_server_name.to_str().into_owned())
+        };
+
+        BackendSettingsSerde {
+            target_address: self.target_address,
+            identity_aware: self.identity_aware,
+            tls_server_name,
+        }
+        .serialize(serializer)
+    }
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
