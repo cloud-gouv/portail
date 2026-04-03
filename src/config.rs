@@ -21,7 +21,7 @@ pub struct BackendSettings {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
-struct BackendSettingsSerde {
+struct RawBackendSettings {
     target_address: SocketAddr,
     #[serde(default)]
     identity_aware: bool,
@@ -34,7 +34,7 @@ impl<'de> Deserialize<'de> for BackendSettings {
     where
         D: Deserializer<'de>,
     {
-        let s = BackendSettingsSerde::deserialize(deserializer)?;
+        let s = RawBackendSettings::deserialize(deserializer)?;
         let tls_server_name = match s.tls_server_name {
             Some(str) => ServerName::try_from(str)
                 .map_err(|e| de::Error::custom(format!("invalid tls_server_name: {e:?}")))?,
@@ -61,7 +61,7 @@ impl Serialize for BackendSettings {
             Some(self.tls_server_name.to_str().into_owned())
         };
 
-        BackendSettingsSerde {
+        RawBackendSettings {
             target_address: self.target_address,
             identity_aware: self.identity_aware,
             tls_server_name,
