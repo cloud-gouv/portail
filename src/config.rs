@@ -1,8 +1,8 @@
-use chrono::Duration;
 use std::{
     collections::HashMap,
     net::SocketAddr,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use serde::{Deserialize, Serialize};
@@ -59,7 +59,7 @@ pub struct Settings {
     pub public_address: Option<std::net::IpAddr>,
 
     /// Global generic options for proxying
-    #[serde_as(as = "serde_with::DurationSeconds<i64>")]
+    #[serde_as(as = "serde_with::DurationSeconds<u64>")]
     pub request_timeout: Duration,
 
     /// Whether to disable the TCP Nagle optimisation on the proxy side.
