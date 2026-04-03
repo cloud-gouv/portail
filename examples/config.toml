@@ -5,6 +5,7 @@ tcp_nodelay = false
 [backends.par01a]
 target-address = "127.0.0.2:8000"
 identity-aware = true
+tls-server-name = "proxy.example.com"
 
 [backends.par01b]
 target-address = "127.0.0.2:8001"

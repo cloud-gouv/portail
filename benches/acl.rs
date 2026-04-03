@@ -186,6 +186,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     let backend_setting = BackendSettings {
         identity_aware: false,
         target_address: "1.1.1.1:443".parse().unwrap(),
+        tls_server_name: None,
     };
 
     for id in 1..=5 {

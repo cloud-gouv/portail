@@ -1,4 +1,5 @@
 use std::{
+    io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::Arc,
 };
@@ -37,8 +38,12 @@ pub async fn connect_to_backend(
 
     if backend.identity_aware {
         debug!("Backend is identity-aware, establishing a TLS connection to the backend first");
-        // TODO: remove the panic
-        let domain = ServerName::try_from(target_addr).unwrap();
+        let backend_host = backend
+            .tls_server_name
+            .clone()
+            .unwrap_or_else(|| backend.target_address.ip().to_string());
+        let domain = ServerName::try_from(backend_host)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
         let target_socket = TcpStream::connect(backend.target_address).await?;
         let stream = crate::proxy::client_tls::connect_using_tls_auth(
             target_socket,

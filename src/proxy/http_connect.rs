@@ -327,7 +327,11 @@ async fn connect_to_http_proxy_backend(
             "Backend is identity-aware, establishing a TLS connection to {}",
             backend.target_address
         );
-        let backend_host = backend.target_address.ip().to_string();
+        let backend_host = backend
+            .tls_server_name
+            .clone()
+            .unwrap_or_else(|| backend.target_address.ip().to_string());
+
         let domain = ServerName::try_from(backend_host)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
 

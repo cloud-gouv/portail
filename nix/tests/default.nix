@@ -567,7 +567,7 @@ in
   #
   portail-identity-aware-upstream =
     let
-      upstreamId = "192.168.1.60";
+      upstreamIp = "192.168.1.60";
     in
     pkgs.testers.nixosTest {
       name = "portail-identity-aware-upstream";
@@ -576,7 +576,7 @@ in
 
         portail-hop = { nodes, ... }@args: {
           imports = [
-            (mkPortailNode { address = upstreamId; } args)
+            (mkPortailNode { address = upstreamIp; } args)
             {
               services.portail.settings.listener = {
                 tls-privkey = certs.proxyCerts.${portailDomain}.key;
@@ -609,6 +609,7 @@ in
                   backends.default = {
                     target-address = "${nodes.portail-hop.networking.primaryIPAddress}:8080";
                     identity-aware = true;
+                    tls-server-name = portailDomain;
                   };
                   listener = {
                     # Trust anchor for verifying the upstream (hop) TLS server certificate.
@@ -649,7 +650,7 @@ in
         ))
         assert (
           result['service'] == 'hello.corp'
-          and result['remote_addr'] == "${upstreamId}"
+          and result['remote_addr'] == "${upstreamIp}"
           and result['tls']
           and result['protocol'] == 'HTTP/2.0'
         ), "Unexpected result from the web service: {}".format(json.dumps(result))

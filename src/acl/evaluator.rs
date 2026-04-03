@@ -499,10 +499,12 @@ mod tests {
         let backend1 = BackendSettings {
             target_address: "1.1.1.1:443".parse().unwrap(),
             identity_aware: false,
+            tls_server_name: None,
         };
         let backend2 = BackendSettings {
             target_address: "1.1.1.2:443".parse().unwrap(),
             identity_aware: false,
+            tls_server_name: None,
         };
 
         let hir = ACLHir {

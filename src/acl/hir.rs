@@ -207,6 +207,7 @@ mod tests {
                 BackendSettings {
                     target_address: "1.1.1.1:443".parse().unwrap(),
                     identity_aware: false,
+                    tls_server_name: None,
                 },
             );
         }

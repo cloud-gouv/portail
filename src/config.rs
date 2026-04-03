@@ -14,6 +14,11 @@ pub struct BackendSettings {
     /// Whether this backend requires a TLS connection with a client certificate.
     #[serde(default)]
     pub identity_aware: bool,
+    /// TLS server name for identity-aware outbound connections.
+    ///
+    /// When unset, the IP address is used.
+    #[serde(default)]
+    pub tls_server_name: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
