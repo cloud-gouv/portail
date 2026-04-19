@@ -19,7 +19,7 @@ futures-util = "0.3.32"
 hyper = { version = "1.8.1", features = ["full"] }
 hyper-util = { version = "0.1.20", features = ["tokio", "server", "http1"] }
 nix = { version = "0.31.1", features = ["socket", "uio", "net"] }
-peekable = { version = "0.4.1", features = ["tokio"] }
+peekable = { version = "0.6.0", features = ["tokio"] }
 regex = "1.12.2"
 rustls-pemfile = "2.2.0"
 serde = { version = "1.0.228", features = ["derive"] }
