@@ -1,13 +1,39 @@
 jobs:
-  tests:
+  eval:
+    name: Evaluate all jobs
     runs-on: ubuntu-latest
+    outputs:
+      stdout: ${{ steps.nix-eval-jobs.outputs.stdout }}
     steps:
     - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
     - uses: samueldr/lix-gha-installer-action@7b7f14d320d6aacfb65bd1ef761566b3b69e474c # main
-    - name: Build package
-      run: nix-build ./nix -A package -I nixpkgs=channel:nixos-unstable
-    - name: Build tests
-      run: nix-build ./nix -A tests -I nixpkgs=channel:nixos-unstable
+    - name: Collect all jobs
+      id: nix-eval-jobs
+      run: |
+        {
+          echo 'stdout<<EOF'
+          nix-shell nix/ci-shell.nix --run eval-checks -I nixpkgs=channel:nixos-unstable
+          echo 'EOF'
+        } >> "$GITHUB_OUTPUT"
+  build:
+    needs: [ eval ]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        derivation: ${{ fromJson(needs.eval.outputs.stdout) }}
+    steps:
+    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+    - uses: samueldr/lix-gha-installer-action@7b7f14d320d6aacfb65bd1ef761566b3b69e474c # main
+    - name: Build ${{ matrix.derivation.attr }}
+      run: nix-build ./nix/release.nix -A ${{ matrix.derivation.attr }}
+      if: ${{ ! matrix.derivation.isCached }}
+  build-status:
+    needs: [ build ]
+    name: Build status
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - run: ${{ !contains(needs.build.result, 'failure') }}
 name: '[Portail] Run test suite'
 on:
   pull_request:
