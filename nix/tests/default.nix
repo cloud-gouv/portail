@@ -126,6 +126,8 @@ let
       RUST_LOG = "portail=debug";
     };
   };
+
+  portailExamples = pkgs.callPackage ../portail-examples.nix { };
 in
 {
   exit-node = pkgs.testers.nixosTest {
@@ -146,6 +148,8 @@ in
         ];
 
         networking.firewall.allowedTCPPorts = [ 8080 ];
+
+        environment.systemPackages = [ portailExamples ];
 
         security.pki.certificates = [
           # Trust the proxy TLS
@@ -279,24 +283,18 @@ in
       ), "Unexpected result from the web service: {}".format(json.dumps(result))
 
       # Test HTTP2 CONNECT multiplexing
-      # For curl to multiplex requests, we have to:
-      # - add --parallel
-      # - add multiple requests with the same domain
-      node.succeed(
-        "curl --fail --trace-ascii /tmp/multiplex-trace --proxy-http2 --parallel --proxy https://${portailDomain}:8080 -o /tmp/multiplex-out1 -o /tmp/multiplex-out2 https://hello.corp.example.com https://hello.corp.example.com"
-      )
-      for i in ["1", "2"]:
-        result = json.loads(node.succeed("cat /tmp/multiplex-out" + i))
+      # - one TLS+H2 connection to the proxy
+      # - two CONNECT streams to the same server
+      result_array = json.loads(node.succeed(
+        "h2-proxy-multiplex --proxy https://${portailDomain}:8080 --url https://hello.corp.example.com/ --url https://hello.corp.example.com/"
+      ))
+      for i, result in enumerate(result_array):
         assert (
           result['service'] == 'hello.corp'
           and result['remote_addr'] == self_ip
           and result['tls']
           and result['protocol'] == 'HTTP/2.0'
         ), "Unexpected result from multiplexed request {}: {}".format(i, json.dumps(result))
-      curl_trace = node.succeed("cat /tmp/multiplex-trace")
-      assert "Multiplexed connection found" in curl_trace, "Expected 'Multiplexed connection found', got: " + curl_trace
-      # Note: this string might change between curl versions
-      assert "Reusing existing https: connection with proxy portail.corp.example.com" in curl_trace, "Expected 'Reusing existing https: connection with proxy portail.corp.example.com', got: " + curl_trace
 
 
       # This exercises rejections and ACLs.
