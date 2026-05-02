@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::os::fd::FromRawFd;
 use std::{path::PathBuf, sync::Arc};
+use tokio::runtime::Handle;
 use tokio::sync::RwLock;
 use tracing::{error, level_filters::LevelFilter};
 use tracing::{info, warn};
@@ -33,6 +34,13 @@ fn get_default_config_path() -> PathBuf {
 
 fn get_default_socket_path() -> PathBuf {
     "/run/portail/fr.gouv.portail.Control".into()
+}
+
+fn log_tokio_runtime_flavor() {
+    let handle = Handle::current();
+    let workers = handle.metrics().num_workers();
+    let flavor = handle.runtime_flavor();
+    info!("tokio runtime: {flavor:?} flavor ({workers} workers)");
 }
 
 #[derive(Subcommand)]
@@ -99,6 +107,8 @@ async fn main() -> Result<()> {
                 .from_env_lossy(),
         )
         .init();
+
+    log_tokio_runtime_flavor();
 
     match cli.command {
         Commands::Rpc {
