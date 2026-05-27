@@ -45,6 +45,9 @@ enum RpcCommands {
         /// Identifier of the backend in the settings
         backend_id: String,
     },
+
+    /// Unset the default backend via RPC.
+    UnsetDefaultBackend,
 }
 
 #[derive(Subcommand)]
@@ -138,13 +141,37 @@ async fn main() -> Result<()> {
                     )?;
 
                     connection
-                        .set_default_backend(&backend_id)
+                        .set_default_backend(Some(&backend_id))
                         .await
                         .context("During Varlink low-level communications. Are you using same versions of Portail on both sides?")?
                         .context("Failed to set default backend")?;
 
                     if !json {
                         println!("Default backend changed successfully.");
+                    } else {
+                        serde_json::to_writer(
+                            std::io::stdout(),
+                            &serde_json::json!({
+                                "success": true
+                            }),
+                        )
+                        .context("While writing JSON")?;
+                    }
+                }
+
+                RpcCommands::UnsetDefaultBackend => {
+                    let mut connection = zlink::unix::connect(&rpc_socket).await.context(
+                        format!("Opening the RPC socket at path '{}'", rpc_socket.display()),
+                    )?;
+
+                    connection
+                        .set_default_backend(None)
+                        .await
+                        .context("During Varlink low-level communications. Are you using same versions of Portail on both sides?")?
+                        .context("Failed to set default backend")?;
+
+                    if !json {
+                        println!("Default backend unset successfully.");
                     } else {
                         serde_json::to_writer(
                             std::io::stdout(),

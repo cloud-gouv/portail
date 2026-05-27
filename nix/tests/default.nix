@@ -783,6 +783,12 @@ in
       # Verify the current default backend is alpha
       assert rpc("print-current-backend")["backend_id"] == "alpha", "Expected current backend to alpha"
 
+      # Unset the current default backend and check this got unset.
+      assert rpc("unset-default-backend", user="alice").get("success", False), "Unable to unset the default backend as trusted user alice"
+      cur_backend = rpc("print-current-backend")["backend_id"]
+      assert cur_backend == "<none>", f"Expected no default backend set, but got: {cur_backend}"
+      assert rpc("set-default-backend", "alpha", user="alice").get("success", False), "Unable to set the default backend as trusted user alice"
+
       # Test SOCKS5 curl -> portail -> portail alpha -> corp-server
       result = json.loads(node.succeed(
         "curl --fail --socks5 http://127.0.0.1:8080 http://hello.corp.example.com"
