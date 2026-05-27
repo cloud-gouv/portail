@@ -173,6 +173,48 @@ async fn handle_http_request(
 
     // TODO: how much header information should we render available?
 
+    let mut recommended_routes = match ctx.acl_ctx.evaluate_routes(&acl.hir) {
+        Ok(routes) => routes,
+        Err(failure) => {
+            let mut resp = Response::new(empty_body());
+            warn!(
+                "Failed to evaluate a request: {} (Context: {:#?})",
+                failure, ctx
+            );
+            *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+            return Ok(resp);
+        }
+    };
+
+    if !recommended_routes.is_empty() {
+        backends.append(&mut recommended_routes);
+    }
+
+    if backends.is_empty()
+        && let Some(ref backend_id) = state.read().await.default_backend
+    {
+        let backend = settings
+            .backends
+            .get(backend_id)
+            .unwrap_or_else(|| panic!("BUG: default backend {backend_id} went away from settings"));
+
+        backends.push(backend);
+    }
+
+    backends.reverse();
+
+    if backends.is_empty() {
+        ctx.acl_ctx.insert(
+            "route.local",
+            crate::acl::ast::ConcreteOperand::Boolean(true),
+        );
+    } else {
+        ctx.acl_ctx.insert(
+            "route.local",
+            crate::acl::ast::ConcreteOperand::Boolean(false),
+        );
+    }
+
     let assessment = match ctx.acl_ctx.evaluate_request(&acl.hir) {
         Ok(assessment) => assessment,
         Err(failure) => {
@@ -205,36 +247,6 @@ async fn handle_http_request(
 
         _ => {}
     }
-
-    let mut recommended_routes = match ctx.acl_ctx.evaluate_routes(&acl.hir) {
-        Ok(routes) => routes,
-        Err(failure) => {
-            let mut resp = Response::new(empty_body());
-            warn!(
-                "Failed to evaluate a request: {} (Context: {:#?})",
-                failure, ctx
-            );
-            *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-            return Ok(resp);
-        }
-    };
-
-    if !recommended_routes.is_empty() {
-        backends.append(&mut recommended_routes);
-    }
-
-    if backends.is_empty()
-        && let Some(ref backend_id) = state.read().await.default_backend
-    {
-        let backend = settings
-            .backends
-            .get(backend_id)
-            .unwrap_or_else(|| panic!("BUG: default backend {backend_id} went away from settings"));
-
-        backends.push(backend);
-    }
-
-    backends.reverse();
 
     let mut stream: Option<OutboundStream> = None;
     for backend in backends {

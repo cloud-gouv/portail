@@ -143,8 +143,50 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
     }
 
     let mut backends: Vec<&BackendSettings> = Vec::with_capacity(1);
-    // We evaluate first whether we are allowed then we evaluate routes.
     let acl = &state.read().await.acl_rules;
+
+    // We evaluate first the routes as it can influence the ACL in case of a local exit.
+    let mut recommended_routes = match ctx.acl_ctx.evaluate_routes(&acl.hir) {
+        Ok(routes) => routes,
+        Err(failure) => {
+            proto.reply_error(&ReplyError::GeneralFailure).await?;
+            warn!(
+                "Failed to evaluate routes for a request: {} (Context: {:#?})",
+                failure, ctx
+            );
+            return Ok(());
+        }
+    };
+
+    if !recommended_routes.is_empty() {
+        backends.append(&mut recommended_routes);
+    }
+
+    if backends.is_empty()
+        && let Some(ref backend_id) = state.read().await.default_backend
+    {
+        let backend = opts
+            .backends
+            .get(backend_id)
+            .unwrap_or_else(|| panic!("BUG: default backend {backend_id} went away from settings"));
+
+        backends.push(backend);
+    }
+
+    backends.reverse();
+
+    if backends.is_empty() {
+        ctx.acl_ctx.insert(
+            "route.local",
+            crate::acl::ast::ConcreteOperand::Boolean(true),
+        );
+    } else {
+        ctx.acl_ctx.insert(
+            "route.local",
+            crate::acl::ast::ConcreteOperand::Boolean(false),
+        );
+    }
+
     let assessment = match ctx.acl_ctx.evaluate_request(&acl.hir) {
         Ok(assessment) => assessment,
         Err(failure) => {
@@ -182,35 +224,6 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
 
         _ => {}
     }
-
-    let mut recommended_routes = match ctx.acl_ctx.evaluate_routes(&acl.hir) {
-        Ok(routes) => routes,
-        Err(failure) => {
-            proto.reply_error(&ReplyError::GeneralFailure).await?;
-            warn!(
-                "Failed to evaluate routes for a request: {} (Context: {:#?})",
-                failure, ctx
-            );
-            return Ok(());
-        }
-    };
-
-    if !recommended_routes.is_empty() {
-        backends.append(&mut recommended_routes);
-    }
-
-    if backends.is_empty()
-        && let Some(ref backend_id) = state.read().await.default_backend
-    {
-        let backend = opts
-            .backends
-            .get(backend_id)
-            .unwrap_or_else(|| panic!("BUG: default backend {backend_id} went away from settings"));
-
-        backends.push(backend);
-    }
-
-    backends.reverse();
 
     // Either, we route to another backend or we do the SOCKS5 proxying ourselves.
     while let Some(backend) = backends.pop() {
