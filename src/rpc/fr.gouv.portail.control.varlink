@@ -1,6 +1,6 @@
 interface fr.gouv.portail.Control
 
-method SetDefaultBackend(backend_id: string)
+method SetDefaultBackend(backend_id: ?string)
 method GetCurrentBackend() -> (backend_id: string)
 
 # A backend was passed to a method but was not found

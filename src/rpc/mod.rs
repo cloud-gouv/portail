@@ -92,7 +92,7 @@ where
 {
     async fn set_default_backend(
         &mut self,
-        backend_id: &str,
+        backend_id: Option<&str>,
         #[zlink(connection)] conn: &mut zlink::Connection<Sock>,
     ) -> Result<(), ControlError> {
         let r = conn
@@ -115,14 +115,18 @@ where
         {
             let mut state = self.state.write().await;
 
-            if !self.settings.backends.contains_key(backend_id) {
-                return Err(ControlError::BackendNotFound {
-                    provided_backend: backend_id.to_string(),
-                    available_backends: self.settings.backends.keys().cloned().collect(),
-                });
-            }
+            if let Some(backend_id) = backend_id {
+                if !self.settings.backends.contains_key(backend_id) {
+                    return Err(ControlError::BackendNotFound {
+                        provided_backend: backend_id.to_string(),
+                        available_backends: self.settings.backends.keys().cloned().collect(),
+                    });
+                }
 
-            state.default_backend = Some(backend_id.to_owned());
+                state.default_backend = Some(backend_id.to_owned());
+            } else {
+                state.default_backend = None;
+            }
 
             Ok(())
         } else {

@@ -51,7 +51,7 @@ impl Error for ControlError {}
 pub trait Control {
     async fn set_default_backend(
         &mut self,
-        backend_id: &str,
+        backend_id: Option<&str>,
     ) -> zlink::Result<Result<(), ControlError>>;
     async fn get_current_backend(
         &mut self,
