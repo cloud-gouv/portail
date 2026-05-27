@@ -1,6 +1,8 @@
 use crate::{
     config::Settings,
-    rpc::fr_gouv_portail_control::{ControlError, GetCurrentBackendOutput},
+    rpc::fr_gouv_portail_control::{
+        BackendInfo, ControlError, GetCurrentBackendOutput, ListBackendsOutput,
+    },
     state::State,
 };
 use std::{collections::HashSet, ffi::CStr, sync::Arc};
@@ -143,6 +145,26 @@ where
                 .default_backend
                 .clone()
                 .unwrap_or("<none>".to_string()),
+        }
+    }
+
+    async fn list_backends(&mut self) -> ListBackendsOutput {
+        let cur_backend = self.state.read().await.default_backend.clone();
+        ListBackendsOutput {
+            backends: self
+                .settings
+                .backends
+                .keys()
+                .map(|backend_id|
+                    // TODO: expose more information about the backend but safely!
+                    BackendInfo {
+                        id: backend_id.to_owned(),
+                        current: cur_backend
+                            .as_ref()
+                            .map(|cur_backend_id| *cur_backend_id == *backend_id)
+                            .unwrap_or(false),
+                    })
+                .collect(),
         }
     }
 }
