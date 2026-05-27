@@ -789,6 +789,12 @@ in
       assert cur_backend == "<none>", f"Expected no default backend set, but got: {cur_backend}"
       assert rpc("set-default-backend", "alpha", user="alice").get("success", False), "Unable to set the default backend as trusted user alice"
 
+      # Check we can list backends and verify the response.
+      backends = rpc("list-backends")
+      assert any(b.get('current', False) for b in backends), "Expected at least one backend to be active"
+      assert [b for b in backends if b.get('current', False)][0].get('id') == "alpha", "Expected active backend to be alpha"
+      assert len(backends) == 2, "Expected two backends (alpha and beta)"
+
       # Test SOCKS5 curl -> portail -> portail alpha -> corp-server
       result = json.loads(node.succeed(
         "curl --fail --socks5 http://127.0.0.1:8080 http://hello.corp.example.com"

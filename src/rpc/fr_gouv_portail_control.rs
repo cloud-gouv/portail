@@ -56,10 +56,24 @@ pub trait Control {
     async fn get_current_backend(
         &mut self,
     ) -> zlink::Result<Result<GetCurrentBackendOutput, ControlError>>;
+    async fn list_backends(&mut self) -> zlink::Result<Result<ListBackendsOutput, ControlError>>;
 }
 
 /// Output parameters for the GetCurrentBackend method.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GetCurrentBackendOutput {
     pub backend_id: String,
+}
+
+/// Type BackendInfo.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BackendInfo {
+    pub id: String,
+    pub current: bool,
+}
+
+/// Output parameters for the ListBackends method.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ListBackendsOutput {
+    pub backends: Vec<BackendInfo>,
 }

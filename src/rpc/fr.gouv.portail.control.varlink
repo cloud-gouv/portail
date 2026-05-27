@@ -2,6 +2,12 @@ interface fr.gouv.portail.Control
 
 method SetDefaultBackend(backend_id: ?string)
 method GetCurrentBackend() -> (backend_id: string)
+method ListBackends() -> (backends: []BackendInfo)
+
+type BackendInfo (
+    id: string,
+    current: bool
+)
 
 # A backend was passed to a method but was not found
 error BackendNotFound (provided_backend: string, available_backends: []string)
