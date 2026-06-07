@@ -1,8 +1,7 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use portail::{
     acl::{
-        ACLRules, EvaluationContext, OwnedEvaluationContext, ast::ConcreteOperand, ast_to_hir,
-        parser::parse_into_ast,
+        ACLRules, OwnedEvaluationContext, ast::ConcreteOperand, ast_to_hir, parser::parse_into_ast,
     },
     config::{BackendSettings, ServerName},
 };

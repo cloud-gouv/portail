@@ -100,7 +100,7 @@ where
             .await
             .map_err(|_| ControlError::PermissionDenied)?;
 
-        let mut groups: Vec<Gid> = r.unix_supplementary_group_ids().to_vec();
+        let mut groups: Vec<Gid> = vec![r.unix_primary_group_id()];
         groups.push(r.unix_primary_group_id());
 
         let groups = resolve_numeric_groups_to_names(groups);
