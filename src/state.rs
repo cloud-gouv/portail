@@ -6,7 +6,7 @@ use std::{
 };
 
 use tokio_rustls::rustls::{
-    RootCertStore,
+    ClientConfig, RootCertStore,
     pki_types::{CertificateDer, PrivateKeyDer},
 };
 use tracing::{info, warn};
@@ -22,9 +22,10 @@ pub struct ServerCertificates<'a> {
 pub struct State {
     pub default_backend: Option<String>,
     pub acl_rules: crate::acl::ACLRules,
-    pub root_store: Option<Arc<tokio_rustls::rustls::RootCertStore>>,
+    pub root_store: Option<Arc<RootCertStore>>,
     pub server_certificates: Option<ServerCertificates<'static>>,
     pub client_cert_resolver: Option<Arc<dyn tokio_rustls::rustls::client::ResolvesClientCert>>,
+    pub client_tls_config: Arc<ClientConfig>,
 }
 
 #[derive(Debug, Error)]
@@ -38,6 +39,14 @@ pub enum MaterialError {
 }
 
 #[derive(Debug, Error)]
+pub enum BuildClientConfigError {
+    #[error(
+        "No trust anchors available: custom store is absent and the OS native store is empty or failed to load"
+    )]
+    NoTrustAnchors,
+}
+
+#[derive(Debug, Error)]
 pub enum ReloadTrustAnchorError {
     #[error("Unexpected material nature: {0}")]
     UnexpectedMaterialNature(#[from] MaterialError),
@@ -45,6 +54,8 @@ pub enum ReloadTrustAnchorError {
     IOError(#[from] std::io::Error),
     #[error("Adding a certificate to the root store failed: {0}")]
     RootStorePopulationError(#[from] tokio_rustls::rustls::Error),
+    #[error("Failed to compile client TLS configuration: {0}")]
+    ClientConfigCompilationError(#[from] BuildClientConfigError),
 }
 
 #[derive(Debug, Error)]
@@ -91,12 +102,50 @@ fn expect_private_key(item: rustls_pemfile::Item) -> Result<PrivateKeyDer<'stati
     }
 }
 
+/// Builds a ClientConfig from discrete trust and identity material.
+fn build_client_tls_config(
+    root_store: &Option<Arc<RootCertStore>>,
+    cert_resolver: &Option<Arc<dyn tokio_rustls::rustls::client::ResolvesClientCert>>,
+) -> Result<Arc<ClientConfig>, BuildClientConfigError> {
+    let roots = match root_store {
+        Some(store) => store.clone(),
+        None => {
+            let mut store = RootCertStore::empty();
+            let native_certs = rustls_native_certs::load_native_certs();
+            if !native_certs.errors.is_empty() {
+                warn!(
+                    "Native cert loader encountered partial errors: {:?}",
+                    native_certs.errors
+                );
+            }
+            for cert in native_certs.certs {
+                let _ = store.add(cert);
+            }
+            if store.is_empty() {
+                return Err(BuildClientConfigError::NoTrustAnchors);
+            }
+            Arc::new(store)
+        }
+    };
+
+    let config = match cert_resolver {
+        Some(resolver) => ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_client_cert_resolver(resolver.clone()),
+        None => ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    };
+
+    Ok(Arc::new(config))
+}
+
 impl State {
     pub fn reload_trust_anchors(
         &mut self,
         settings: &Settings,
     ) -> Result<(), ReloadTrustAnchorError> {
-        if let Some(ref listener) = settings.listener
+        let new_root_store = if let Some(ref listener) = settings.listener
             && let Some(ref client_ca) = listener.cacert_file
         {
             let mut ca_file = BufReader::new(std::fs::File::open(client_ca)?);
@@ -111,10 +160,16 @@ impl State {
             for cert in certs {
                 roots.add(cert)?;
             }
+            Some(Arc::new(roots))
+        } else {
+            None
+        };
 
-            self.root_store = Some(Arc::new(roots));
-        }
+        // If this fails, state remains consistent.
+        let new_config = build_client_tls_config(&new_root_store, &self.client_cert_resolver)?;
 
+        self.root_store = new_root_store;
+        self.client_tls_config = new_config;
         Ok(())
     }
 
@@ -144,15 +199,8 @@ impl State {
 
                     return Ok(true);
                 }
-
-                (None, None) => {
-                    // No server TLS.
-                    return Ok(false);
-                }
-
-                _ => {
-                    return Err(ReloadServerCertificateError::MisconfiguredServerCertificates);
-                }
+                (None, None) => return Ok(false),
+                _ => return Err(ReloadServerCertificateError::MisconfiguredServerCertificates),
             }
         }
 
@@ -160,7 +208,12 @@ impl State {
     }
 
     #[allow(dead_code)]
-    pub fn reload_client_certs(&self) {}
+    pub fn reload_client_certs(&mut self) -> Result<(), BuildClientConfigError> {
+        // TODO: Update self.client_cert_resolver here when TPM2/PKCS11 integration is ready.
+        let new_config = build_client_tls_config(&self.root_store, &self.client_cert_resolver)?;
+        self.client_tls_config = new_config;
+        Ok(())
+    }
 
     #[allow(dead_code)]
     pub fn reload_acl_rules(&mut self, settings: &Settings) {
@@ -190,21 +243,32 @@ pub struct Statistics {
 }
 
 pub fn init(settings: &Settings) -> Result<State, InitError> {
+    let acl_rules = crate::acl::load_rules_from_file(
+        &settings
+            .filter_acl_rules_path
+            .clone()
+            .ok_or(InitError::MissingACLFile)?,
+        settings,
+    )?;
+
+    // Initialize with a dummy config, then reload to populate real trust anchors.
+    // This is infaillible, but for security, I prefer to keep an error wrapper.
+    let dummy_roots = Arc::new(RootCertStore::empty());
+    let client_tls_config = build_client_tls_config(&Some(dummy_roots), &None)
+        .map_err(ReloadTrustAnchorError::ClientConfigCompilationError)?;
+
     let mut state = State {
         default_backend: settings.default_backend.clone(),
-        acl_rules: crate::acl::load_rules_from_file(
-            &settings
-                .filter_acl_rules_path
-                .clone()
-                .ok_or(InitError::MissingACLFile)?,
-            settings,
-        )?,
+        acl_rules,
         root_store: None,
         client_cert_resolver: None,
         server_certificates: None,
+        client_tls_config,
     };
 
     // Load server certificates and trust anchors for the first time.
+    state.reload_trust_anchors(settings)?;
+
     if state.reload_server_certs(settings)? {
         info!("TLS listener is configured and available on this proxy.");
     } else {
@@ -212,8 +276,6 @@ pub fn init(settings: &Settings) -> Result<State, InitError> {
             "TLS is not configured and will not be available for requests. Use this only if your proxy is secured in another fashion: localhost binding or tunnel chaining."
         );
     }
-
-    state.reload_trust_anchors(settings)?;
 
     Ok(state)
 }
