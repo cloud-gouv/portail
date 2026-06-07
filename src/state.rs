@@ -242,6 +242,35 @@ pub struct Statistics {
     pub nr_udp_connections: AtomicUsize,
 }
 
+/// Loads root certificates from settings or falls back to system native roots.
+fn load_initial_trust_anchors(
+    settings: &Settings,
+) -> Result<(Option<Arc<RootCertStore>>, Arc<ClientConfig>), ReloadTrustAnchorError> {
+    let root_store = if let Some(ref listener) = settings.listener
+        && let Some(ref client_ca) = listener.cacert_file
+    {
+        let mut ca_file = BufReader::new(std::fs::File::open(client_ca)?);
+        let certs: Vec<_> = rustls_pemfile::read_all(&mut ca_file)
+            .map(|item| {
+                item.map_err(|_| MaterialError::SectionParsingError)
+                    .and_then(expect_certificate)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut roots = RootCertStore::empty();
+        for cert in certs {
+            roots.add(cert)?;
+        }
+        Some(Arc::new(roots))
+    } else {
+        None
+    };
+
+    // Build the definitive configuration directly using initialized materials.
+    let client_tls_config = build_client_tls_config(&root_store, &None)?;
+    Ok((root_store, client_tls_config))
+}
+
 pub fn init(settings: &Settings) -> Result<State, InitError> {
     let acl_rules = crate::acl::load_rules_from_file(
         &settings
@@ -251,24 +280,18 @@ pub fn init(settings: &Settings) -> Result<State, InitError> {
         settings,
     )?;
 
-    // Initialize with a dummy config, then reload to populate real trust anchors.
-    // This is infaillible, but for security, I prefer to keep an error wrapper.
-    let dummy_roots = Arc::new(RootCertStore::empty());
-    let client_tls_config = build_client_tls_config(&Some(dummy_roots), &None)
-        .map_err(ReloadTrustAnchorError::ClientConfigCompilationError)?;
+    let (root_store, client_tls_config) = load_initial_trust_anchors(settings)?;
 
     let mut state = State {
         default_backend: settings.default_backend.clone(),
         acl_rules,
-        root_store: None,
+        root_store,
         client_cert_resolver: None,
         server_certificates: None,
         client_tls_config,
     };
 
-    // Load server certificates and trust anchors for the first time.
-    state.reload_trust_anchors(settings)?;
-
+    // Load server certificates independently.
     if state.reload_server_certs(settings)? {
         info!("TLS listener is configured and available on this proxy.");
     } else {
