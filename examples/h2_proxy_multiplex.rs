@@ -14,13 +14,14 @@ use http_body_util::{BodyExt, Empty};
 use hyper::client::conn::http2;
 use hyper::{Request, StatusCode, Uri};
 use hyper_util::rt::{TokioExecutor, TokioIo};
+use rustls_pki_types::CertificateDer;
+use rustls_pki_types::pem::PemObject;
 use serde_json::Value;
 use std::fs::File;
 use std::io::BufReader;
 use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
-use tokio_rustls::rustls::{self, ClientConfig, pki_types::ServerName};
 
 #[derive(Parser, Debug)]
 #[command(name = "h2-proxy-multiplex")]
@@ -34,9 +35,9 @@ struct Args {
 fn load_roots() -> Result<rustls::RootCertStore> {
     // For e2e tests, we need to inject certificates.
     let path = "/etc/ssl/certs/ca-certificates.crt";
-    let mut reader = BufReader::new(File::open(&path).with_context(|| format!("open {path}"))?);
+    let mut reader = BufReader::new(File::open(path).with_context(|| format!("open {path}"))?);
     let mut roots = rustls::RootCertStore::empty();
-    let certs: Vec<_> = rustls_pemfile::certs(&mut reader)
+    let certs: Vec<_> = CertificateDer::pem_reader_iter(&mut reader)
         .collect::<std::result::Result<_, _>>()
         .context("parse PEM")?;
     for c in certs {
