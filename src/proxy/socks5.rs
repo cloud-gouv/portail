@@ -16,7 +16,7 @@ use tokio_rustls::TlsStream;
 use tracing::{debug, info, warn};
 
 use crate::{
-    config::{BackendSettings, Settings},
+    config::{BackendSettings, KnownBackend, Settings},
     proxy::context::{InitialRequestContext, TargetContext},
     state::State,
 };
@@ -28,7 +28,7 @@ pub enum OutboundSock5Stream {
 }
 
 pub async fn connect_to_backend(
-    backend: &BackendSettings,
+    backend: &KnownBackend,
     final_address: &TargetAddr,
     state: Arc<RwLock<State>>, // TODO: better error type
 ) -> Result<OutboundSock5Stream, SocksError> {
@@ -227,23 +227,35 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
 
     // Either, we route to another backend or we do the SOCKS5 proxying ourselves.
     while let Some(backend) = backends.pop() {
-        debug!(
-            "Backend {} selected for routing the connection",
-            &backend.target_address
-        );
-
-        match connect_to_backend(backend, &final_addr, state.clone()).await {
-            Ok(stream) => {
-                route_to_backend(stream, proto).await?;
+        match backend {
+            BackendSettings::UnresolvedBackend => {
+                // TODO: keep the IDs to print them here.
+                tracing::error!(
+                    "An unresolved backend was selected during SOCKS5 routing. This should not happen, rejecting the request."
+                );
+                proto.reply_error(&ReplyError::GeneralFailure).await?;
                 return Ok(());
             }
-
-            Err(err) => {
+            BackendSettings::KnownBackend(backend) => {
                 debug!(
-                    "Backend {} failed to route the request: {err}, trying the next one",
+                    "Backend {} selected for routing the connection",
                     &backend.target_address
                 );
-                continue;
+
+                match connect_to_backend(backend, &final_addr, state.clone()).await {
+                    Ok(stream) => {
+                        route_to_backend(stream, proto).await?;
+                        return Ok(());
+                    }
+
+                    Err(err) => {
+                        debug!(
+                            "Backend {} failed to route the request: {err}, trying the next one",
+                            &backend.target_address
+                        );
+                        continue;
+                    }
+                }
             }
         }
     }
