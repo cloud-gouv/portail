@@ -5,6 +5,7 @@ use std::{
     sync::{Arc, atomic::AtomicUsize},
 };
 
+use rustls_pki_types::pem::PemObject;
 use tokio_rustls::rustls::{
     RootCertStore,
     pki_types::{CertificateDer, PrivateKeyDer},
@@ -31,10 +32,6 @@ pub struct State {
 pub enum MaterialError {
     #[error("Failed to parse PEM section")]
     SectionParsingError,
-    #[error("Expected a certificate")]
-    ExpectedCertificate,
-    #[error("Expected a private key")]
-    ExpectedPrivateKey,
 }
 
 #[derive(Debug, Error)]
@@ -53,8 +50,6 @@ pub enum ReloadServerCertificateError {
     UnexpectedMaterialNature(#[from] MaterialError),
     #[error("Either the TLS chain or the private key is missing while the other is set")]
     MisconfiguredServerCertificates,
-    #[error("Missing private key in the TLS private key file")]
-    MissingPrivateKey,
     #[error("Failed to parse PEM files")]
     PEMParsingError,
     #[error("Failed during I/O: {0}")]
@@ -73,24 +68,6 @@ pub enum InitError {
     LoadACLError(#[from] crate::acl::LoadError),
 }
 
-fn expect_certificate(
-    item: rustls_pemfile::Item,
-) -> Result<CertificateDer<'static>, MaterialError> {
-    match item {
-        rustls_pemfile::Item::X509Certificate(cert) => Ok(cert),
-        _ => Err(MaterialError::ExpectedCertificate),
-    }
-}
-
-fn expect_private_key(item: rustls_pemfile::Item) -> Result<PrivateKeyDer<'static>, MaterialError> {
-    match item {
-        rustls_pemfile::Item::Pkcs1Key(pkey) => Ok(pkey.into()),
-        rustls_pemfile::Item::Sec1Key(pkey) => Ok(pkey.into()),
-        rustls_pemfile::Item::Pkcs8Key(pkey) => Ok(pkey.into()),
-        _ => Err(MaterialError::ExpectedPrivateKey),
-    }
-}
-
 impl State {
     pub fn reload_trust_anchors(
         &mut self,
@@ -100,11 +77,8 @@ impl State {
             && let Some(ref client_ca) = listener.cacert_file
         {
             let mut ca_file = BufReader::new(std::fs::File::open(client_ca)?);
-            let certs: Vec<_> = rustls_pemfile::read_all(&mut ca_file)
-                .map(|item| {
-                    item.map_err(|_| MaterialError::SectionParsingError)
-                        .and_then(expect_certificate)
-                })
+            let certs: Vec<_> = CertificateDer::pem_reader_iter(&mut ca_file)
+                .map(|item| item.map_err(|_| MaterialError::SectionParsingError))
                 .collect::<Result<Vec<_>, _>>()?;
 
             let mut roots = RootCertStore::empty();
@@ -126,20 +100,16 @@ impl State {
             match (&listener.tls_chain, &listener.tls_privkey) {
                 (Some(tls_chain), Some(tls_privkey)) => {
                     let mut tls_chain_file = BufReader::new(std::fs::File::open(tls_chain)?);
-                    let tls_chain_certs: Vec<_> = rustls_pemfile::read_all(&mut tls_chain_file)
-                        .map(|item| {
-                            item.map_err(|_| MaterialError::SectionParsingError)
-                                .and_then(expect_certificate)
-                        })
-                        .collect::<Result<Vec<_>, _>>()?;
-                    let (tls_private_key, _) =
-                        rustls_pemfile::read_one_from_slice(&std::fs::read(tls_privkey)?)
-                            .map_err(|_| ReloadServerCertificateError::PEMParsingError)?
-                            .ok_or(ReloadServerCertificateError::MissingPrivateKey)?;
+                    let tls_chain_certs: Vec<_> =
+                        CertificateDer::pem_reader_iter(&mut tls_chain_file)
+                            .map(|item| item.map_err(|_| MaterialError::SectionParsingError))
+                            .collect::<Result<Vec<_>, _>>()?;
+                    let tls_private_key = PrivateKeyDer::from_pem_file(tls_privkey)
+                        .map_err(|_| ReloadServerCertificateError::PEMParsingError)?;
 
                     self.server_certificates = Some(ServerCertificates {
                         cert_chain: tls_chain_certs,
-                        private_key: expect_private_key(tls_private_key)?,
+                        private_key: tls_private_key,
                     });
 
                     return Ok(true);
