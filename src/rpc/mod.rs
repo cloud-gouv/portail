@@ -1,7 +1,8 @@
 use crate::{
-    config::Settings,
+    config::{BackendSettings, KnownBackend, Settings},
     rpc::fr_gouv_portail_control::{
-        BackendInfo, ControlError, GetCurrentBackendOutput, ListBackendsOutput,
+        BackendListItem, ControlError, DynamicBackendSpec, GetCurrentBackendOutput,
+        ListBackendsOutput,
     },
     state::State,
 };
@@ -10,7 +11,7 @@ use tokio::{net::UnixListener, sync::RwLock};
 use tracing::info;
 use zlink::{
     Server,
-    connection::{Gid, socket::FetchPeerCredentials},
+    connection::{Gid, Socket, socket::FetchPeerCredentials},
     service,
     unix::Listener,
 };
@@ -80,13 +81,56 @@ impl Control {
     }
 }
 
-/// FIXME: `env!()` cannot be used in the proc-macro below alas: https://github.com/z-galaxy/zlink/issues/237
+impl Control {
+    async fn check_authorization<S, I, T>(
+        &self,
+        conn: &mut zlink::Connection<S>,
+        authorized_groups: I,
+    ) -> Result<(), ControlError>
+    where
+        S: Socket,
+        S::ReadHalf: FetchPeerCredentials,
+        I: IntoIterator<Item = T>,
+        T: AsRef<str>,
+    {
+        let creds = conn
+            .peer_credentials()
+            .await
+            .map_err(|_| ControlError::PermissionDenied)?;
+
+        let mut groups: Vec<Gid> = creds.unix_supplementary_group_ids().to_vec();
+        groups.push(creds.unix_primary_group_id());
+
+        let groups = resolve_numeric_groups_to_names(groups);
+
+        if creds.unix_user_id().is_root()
+            || authorized_groups
+                .into_iter()
+                .any(|trusted| groups.contains(trusted.as_ref()))
+        {
+            info!(
+                "Privileged RPC allowed from user '{}'",
+                creds.unix_user_id()
+            );
+            Ok(())
+        } else {
+            tracing::warn!(
+                "Privileged RPC call attempt from user '{}' (groups: '{:?}') refused",
+                creds.unix_user_id(),
+                groups
+            );
+
+            Err(ControlError::PermissionDenied)
+        }
+    }
+}
+
 #[service(
     interface = "fr.gouv.portail.Control",
     vendor = "gouv",
-    product = "portail",
-    version = "0.1.0",
-    url = "https://github.com/cloud-gouv/portail"
+    product = env!("CARGO_PKG_NAME"),
+    version = env!("CARGO_PKG_VERSION"),
+    url = env!("CARGO_PKG_HOMEPAGE"),
 )]
 impl<Sock> Control
 where
@@ -97,42 +141,54 @@ where
         backend_id: Option<&str>,
         #[zlink(connection)] conn: &mut zlink::Connection<Sock>,
     ) -> Result<(), ControlError> {
-        let r = conn
-            .peer_credentials()
-            .await
-            .map_err(|_| ControlError::PermissionDenied)?;
+        self.check_authorization(conn, self.settings.rpc.trusted_groups.iter())
+            .await?;
 
-        let mut groups: Vec<Gid> = r.unix_supplementary_group_ids().to_vec();
-        groups.push(r.unix_primary_group_id());
+        let mut state = self.state.write().await;
 
-        let groups = resolve_numeric_groups_to_names(groups);
-
-        if r.unix_user_id().is_root()
-            || self
-                .settings
-                .rpc
-                .trusted_groups
-                .iter()
-                .any(|trusted_group| groups.contains(trusted_group))
-        {
-            let mut state = self.state.write().await;
-
-            if let Some(backend_id) = backend_id {
-                if !self.settings.backends.contains_key(backend_id) {
-                    return Err(ControlError::BackendNotFound {
-                        provided_backend: backend_id.to_string(),
-                        available_backends: self.settings.backends.keys().cloned().collect(),
-                    });
-                }
-
-                state.default_backend = Some(backend_id.to_owned());
-            } else {
-                state.default_backend = None;
+        if let Some(backend_id) = backend_id {
+            if !state.backends.contains_key(backend_id) {
+                return Err(ControlError::BackendNotFound {
+                    provided_backend: backend_id.to_string(),
+                    available_backends: state.backends.keys().cloned().collect(),
+                });
             }
 
-            Ok(())
+            state.default_backend = Some(backend_id.to_owned());
         } else {
-            Err(ControlError::PermissionDenied)
+            state.default_backend = None;
+        }
+
+        Ok(())
+    }
+
+    async fn update_dynamic_backend(
+        &mut self,
+        backend_id: &str,
+        backend_spec: DynamicBackendSpec,
+        #[zlink(connection)] conn: &mut zlink::Connection<Sock>,
+    ) -> Result<(), ControlError> {
+        self.check_authorization(conn, self.settings.rpc.admin_groups.iter())
+            .await?;
+
+        let mut state = self.state.write().await;
+        let new_backend: KnownBackend = backend_spec.try_into()?;
+
+        match state.backends.get_mut(backend_id) {
+            Some(backend) => {
+                info!(
+                    "Changed backend `{}` from `{:?}` to `{:?}`",
+                    backend_id, *backend, new_backend
+                );
+
+                *backend = BackendSettings::KnownBackend(new_backend);
+
+                Ok(())
+            }
+            None => Err(ControlError::BackendNotFound {
+                provided_backend: backend_id.to_string(),
+                available_backends: state.backends.keys().cloned().collect(),
+            }),
         }
     }
 
@@ -157,7 +213,7 @@ where
                 .keys()
                 .map(|backend_id|
                     // TODO: expose more information about the backend but safely!
-                    BackendInfo {
+                    BackendListItem {
                         id: backend_id.to_owned(),
                         current: cur_backend
                             .as_ref()
