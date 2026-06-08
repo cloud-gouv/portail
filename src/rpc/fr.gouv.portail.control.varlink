@@ -1,15 +1,26 @@
 interface fr.gouv.portail.Control
 
-method SetDefaultBackend(backend_id: ?string)
+method SetDefaultBackend(backend_id: ?string) -> ()
 method GetCurrentBackend() -> (backend_id: string)
-method ListBackends() -> (backends: []BackendInfo)
+method ListBackends() -> (backends: []BackendListItem)
+method UpdateDynamicBackend(backend_id: string, backend_spec: DynamicBackendSpec) -> ()
 
-type BackendInfo (
+type DynamicBackendSpec (
+  target_address: string,
+  identity_aware: bool,
+  tls_server_name: ?string
+)
+
+type BackendListItem (
     id: string,
     current: bool
 )
 
 # A backend was passed to a method but was not found
 error BackendNotFound (provided_backend: string, available_backends: []string)
+# Backend has invalid values (target address, TLS server names or something else.)
+error InvalidBackend (reason: string)
+# This backend is immutable and cannot be changed at runtime
+error ImmutableBackend ()
 # Client is not allowed to call this method.
 error PermissionDenied ()

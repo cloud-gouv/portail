@@ -131,6 +131,11 @@ pub struct EscapeSettings {
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct RPCSettings {
+    /// Administrative groups are allowed to call admin RPCs such as UpdateDynamicBackend.
+    /// They can disable the proxy functionality or bypass it by redirecting the
+    /// dynamic backend to an attacker-controlled target.
+    #[serde(default)]
+    pub admin_groups: Vec<String>,
     /// Trusted groups are allowed to call write RPC such as SetDefaultBackend or Reload.
     /// They cannot disable the proxy functionality nonetheless.
     #[serde(default)]
