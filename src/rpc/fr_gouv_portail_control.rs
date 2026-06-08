@@ -60,20 +60,20 @@ pub trait Control {
 }
 
 /// Output parameters for the GetCurrentBackend method.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, zlink::introspect::Type)]
 pub struct GetCurrentBackendOutput {
     pub backend_id: String,
 }
 
 /// Type BackendInfo.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, zlink::introspect::Type)]
 pub struct BackendInfo {
     pub id: String,
     pub current: bool,
 }
 
 /// Output parameters for the ListBackends method.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, zlink::introspect::Type)]
 pub struct ListBackendsOutput {
     pub backends: Vec<BackendInfo>,
 }
