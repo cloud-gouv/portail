@@ -4,8 +4,16 @@
 //! It was adapted for our needs.
 
 use serde::{Deserialize, Serialize};
-use std::{error::Error, fmt::Display};
+use std::{
+    error::Error,
+    fmt::Display,
+    net::{AddrParseError, SocketAddr},
+};
+use thiserror::Error;
+use tokio_rustls::rustls::pki_types::InvalidDnsNameError;
 use zlink::{ReplyError, proxy};
+
+use crate::config::KnownBackend;
 
 #[derive(Debug, Clone, PartialEq, ReplyError, zlink::introspect::ReplyError)]
 #[zlink(interface = "fr.gouv.portail.Control")]
@@ -14,6 +22,12 @@ pub enum ControlError {
         provided_backend: String,
         available_backends: Vec<String>,
     },
+    /// Backend has invalid values (target address, TLS server names or something else.)
+    InvalidBackend {
+        reason: String,
+    },
+    /// This backend is not dynamic and cannot be changed
+    ImmutableBackend,
     PermissionDenied,
 }
 
@@ -38,6 +52,14 @@ impl Display for ControlError {
             Self::PermissionDenied => {
                 f.write_str("Permission was denied, are you in the trusted group?")?
             }
+
+            Self::ImmutableBackend => {
+                f.write_str("Backend is not marked as dynamic and cannot be changed.")?
+            }
+
+            Self::InvalidBackend { reason } => {
+                f.write_fmt(format_args!("Backend passed had invalid data: {}", reason))?
+            }
         }
 
         Ok(())
@@ -57,6 +79,58 @@ pub trait Control {
         &mut self,
     ) -> zlink::Result<Result<GetCurrentBackendOutput, ControlError>>;
     async fn list_backends(&mut self) -> zlink::Result<Result<ListBackendsOutput, ControlError>>;
+    async fn update_dynamic_backend(
+        &mut self,
+        backend_id: &str,
+        backend_spec: DynamicBackendSpec,
+    ) -> zlink::Result<Result<(), ControlError>>;
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, zlink::introspect::Type)]
+pub struct DynamicBackendSpec {
+    pub target_address: String,
+    pub identity_aware: bool,
+    pub tls_server_name: Option<String>,
+}
+
+#[derive(Debug, Error)]
+pub enum DynamicBackendResolutionError {
+    #[error("Invalid target address: {0}")]
+    InvalidTargetAddress(#[from] AddrParseError),
+    #[error("Invalid TLS server name: {0}")]
+    InvalidServerName(#[from] InvalidDnsNameError),
+}
+
+impl TryFrom<DynamicBackendSpec> for KnownBackend {
+    type Error = DynamicBackendResolutionError;
+
+    fn try_from(value: DynamicBackendSpec) -> Result<Self, Self::Error> {
+        let tgt_address: SocketAddr = value.target_address.parse()?;
+        let ip = tgt_address.ip();
+        Ok(Self {
+            target_address: tgt_address,
+            identity_aware: value.identity_aware,
+            tls_server_name: match value.tls_server_name {
+                Some(str) => str.try_into()?,
+                None => ip.into(),
+            },
+        })
+    }
+}
+
+impl From<DynamicBackendResolutionError> for ControlError {
+    fn from(value: DynamicBackendResolutionError) -> Self {
+        match value {
+            DynamicBackendResolutionError::InvalidTargetAddress(err) => {
+                ControlError::InvalidBackend {
+                    reason: format!("Invalid target address: {}", err),
+                }
+            }
+            DynamicBackendResolutionError::InvalidServerName(err) => ControlError::InvalidBackend {
+                reason: format!("Invalid TLS server name: {}", err),
+            },
+        }
+    }
 }
 
 /// Output parameters for the GetCurrentBackend method.
@@ -65,9 +139,8 @@ pub struct GetCurrentBackendOutput {
     pub backend_id: String,
 }
 
-/// Type BackendInfo.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, zlink::introspect::Type)]
-pub struct BackendInfo {
+pub struct BackendListItem {
     pub id: String,
     pub current: bool,
 }
@@ -75,5 +148,5 @@ pub struct BackendInfo {
 /// Output parameters for the ListBackends method.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, zlink::introspect::Type)]
 pub struct ListBackendsOutput {
-    pub backends: Vec<BackendInfo>,
+    pub backends: Vec<BackendListItem>,
 }
