@@ -192,6 +192,7 @@ mod tests {
     use super::*;
     use crate::acl::Action;
     use crate::acl::ast;
+    use crate::config::KnownBackend;
     use crate::config::{BackendSettings, ServerName};
     use insta::assert_debug_snapshot;
     use std::collections::HashMap;
@@ -205,11 +206,11 @@ mod tests {
             let target_address = "1.1.1.1:443".parse().unwrap();
             backends.insert(
                 id.to_string(),
-                BackendSettings {
+                BackendSettings::KnownBackend(KnownBackend {
                     target_address,
                     identity_aware: false,
                     tls_server_name: ServerName::from(target_address.ip()),
-                },
+                }),
             );
         }
 

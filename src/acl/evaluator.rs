@@ -250,7 +250,7 @@ impl<'s> EvaluationContext<'s> {
 mod tests {
     use crate::{
         acl::{Action, OwnedEvaluationContext},
-        config::BackendSettings,
+        config::{BackendSettings, KnownBackend},
     };
 
     #[cfg(test)]
@@ -498,19 +498,19 @@ mod tests {
 
         let backend1 = {
             let target_address = "1.1.1.1:443".parse().unwrap();
-            BackendSettings {
+            BackendSettings::KnownBackend(KnownBackend {
                 target_address,
                 identity_aware: false,
                 tls_server_name: crate::config::ServerName::from(target_address.ip()),
-            }
+            })
         };
         let backend2 = {
             let target_address = "1.1.1.2:443".parse().unwrap();
-            BackendSettings {
+            BackendSettings::KnownBackend(KnownBackend {
                 target_address,
                 identity_aware: false,
                 tls_server_name: crate::config::ServerName::from(target_address.ip()),
-            }
+            })
         };
 
         let hir = ACLHir {

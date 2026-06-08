@@ -1,3 +1,4 @@
+use crate::config::KnownBackend;
 use crate::proxy::context::InitialRequestContext;
 use crate::proxy::protocol_detect::{ALPN_H2, ALPN_HTTP1_1};
 use crate::{
@@ -250,27 +251,40 @@ async fn handle_http_request(
 
     let mut stream: Option<OutboundStream> = None;
     for backend in backends {
-        debug!(
-            "Backend {} selected for HTTP CONNECT to {}",
-            backend.target_address, final_address
-        );
-        match connect_to_http_proxy_backend(
-            backend,
-            &final_address,
-            state.clone(),
-            &inbound_protocol,
-        )
-        .await
-        {
-            Ok(upstream) => {
-                stream = Some(upstream);
-                break;
-            }
-            Err(err) => {
-                debug!(
-                    "Backend {} failed for HTTP CONNECT: {}, trying next",
-                    backend.target_address, err
+        match backend {
+            BackendSettings::UnresolvedBackend => {
+                // TODO: keep the IDs to print them here.
+                tracing::error!(
+                    "An unresolved backend was selected during HTTP CONNECT routing. This should not happen, rejecting the request."
                 );
+                let mut resp = Response::new(empty_body());
+                *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                return Ok(resp);
+            }
+            BackendSettings::KnownBackend(backend) => {
+                debug!(
+                    "Backend {} selected for HTTP CONNECT to {}",
+                    backend.target_address, final_address
+                );
+                match connect_to_http_proxy_backend(
+                    backend,
+                    &final_address,
+                    state.clone(),
+                    &inbound_protocol,
+                )
+                .await
+                {
+                    Ok(upstream) => {
+                        stream = Some(upstream);
+                        break;
+                    }
+                    Err(err) => {
+                        debug!(
+                            "Backend {} failed for HTTP CONNECT: {}, trying next",
+                            backend.target_address, err
+                        );
+                    }
+                }
             }
         }
     }
@@ -327,7 +341,7 @@ fn empty_body() -> BoxBody<Bytes, hyper::Error> {
 ///
 /// When upstream is plain TCP, HTTP/1.1 is used.
 async fn connect_to_http_proxy_backend(
-    backend: &BackendSettings,
+    backend: &KnownBackend,
     final_address: &str,
     state: Arc<RwLock<State>>,
     inbound_protocol: &InboundHttpProtocol,
