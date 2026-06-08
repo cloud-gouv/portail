@@ -22,6 +22,8 @@ use std::io::BufReader;
 use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
+use tokio_rustls::rustls::{self, ClientConfig, pki_types::ServerName};
+use zlink::futures_util::future::try_join_all;
 
 #[derive(Parser, Debug)]
 #[command(name = "h2-proxy-multiplex")]
@@ -175,7 +177,7 @@ async fn main() -> Result<()> {
         let _ = connection.await;
     });
 
-    let combined: Vec<Value> = futures_util::future::try_join_all(args.url.iter().map(|url| {
+    let combined: Vec<Value> = try_join_all(args.url.iter().map(|url| {
         let send = send.clone();
         let cfg = target_cfg.clone();
         let url = url.clone();
