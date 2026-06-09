@@ -214,20 +214,35 @@ where
 
     async fn list_backends(&mut self) -> ListBackendsOutput {
         let cur_backend = self.state.read().await.default_backend.clone();
+        let backends = &self.state.read().await.backends;
         ListBackendsOutput {
-            backends: self
-                .settings
-                .backends
-                .keys()
-                .map(|backend_id|
-                    // TODO: expose more information about the backend but safely!
-                    BackendListItem {
-                        id: backend_id.to_owned(),
-                        current: cur_backend
-                            .as_ref()
-                            .map(|cur_backend_id| *cur_backend_id == *backend_id)
-                            .unwrap_or(false),
-                    })
+            backends: backends
+                .iter()
+                .map(|(backend_id, backend)| {
+                    let current = cur_backend
+                        .as_ref()
+                        .map(|cur_backend_id| *cur_backend_id == *backend_id)
+                        .unwrap_or(false);
+                    let id = backend_id.to_owned();
+
+                    match backend {
+                        BackendSettings::UnresolvedBackend => BackendListItem {
+                            id,
+                            current,
+                            dynamic: true,
+                            spec: None,
+                        },
+                        BackendSettings::KnownBackend(known) => BackendListItem {
+                            id,
+                            current,
+                            dynamic: matches!(
+                                self.settings.backends.get(backend_id.as_str()).unwrap_or_else(|| panic!("Broken invariant: backend {backend_id} exists in state but not in settings")),
+                                BackendSettings::UnresolvedBackend
+                            ),
+                            spec: Some(known.clone().into()),
+                        },
+                    }
+                })
                 .collect(),
         }
     }
