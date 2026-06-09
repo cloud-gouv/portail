@@ -104,7 +104,7 @@ pub async fn serve_http2_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
 async fn handle_http_request(
     req: Request<Incoming>,
     ctx: InitialRequestContext,
-    settings: Arc<Settings>,
+    _settings: Arc<Settings>,
     state: Arc<RwLock<State>>,
     inbound_protocol: InboundHttpProtocol,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
@@ -135,7 +135,8 @@ async fn handle_http_request(
 
     let target_address = target_authority.to_string();
     let mut final_address = target_address.clone();
-    let mut backends: Vec<&BackendSettings> = Vec::with_capacity(1);
+    let mut backends: Vec<BackendSettings> = Vec::with_capacity(1);
+    let backend_specs = &state.read().await.backends;
     // We evaluate first whether we are allowed then we evaluate routes.
     let acl = &state.read().await.acl_rules;
 
@@ -174,7 +175,7 @@ async fn handle_http_request(
 
     // TODO: how much header information should we render available?
 
-    let mut recommended_routes = match ctx.acl_ctx.evaluate_routes(&acl.hir) {
+    let mut recommended_routes = match ctx.acl_ctx.evaluate_routes(backend_specs, &acl.hir) {
         Ok(routes) => routes,
         Err(failure) => {
             let mut resp = Response::new(empty_body());
@@ -194,10 +195,13 @@ async fn handle_http_request(
     if backends.is_empty()
         && let Some(ref backend_id) = state.read().await.default_backend
     {
-        let backend = settings
+        let backend = state
+            .read()
+            .await
             .backends
             .get(backend_id)
-            .unwrap_or_else(|| panic!("BUG: default backend {backend_id} went away from settings"));
+            .unwrap_or_else(|| panic!("BUG: default backend {backend_id} went away from state"))
+            .to_owned();
 
         backends.push(backend);
     }
@@ -267,7 +271,7 @@ async fn handle_http_request(
                     backend.target_address, final_address
                 );
                 match connect_to_http_proxy_backend(
-                    backend,
+                    &backend,
                     &final_address,
                     state.clone(),
                     &inbound_protocol,
