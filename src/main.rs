@@ -4,15 +4,14 @@ use std::net::SocketAddr;
 use std::os::fd::FromRawFd;
 use std::{path::PathBuf, sync::Arc};
 use tokio::sync::RwLock;
-use tracing::{error, level_filters::LevelFilter};
-use tracing::{info, warn};
-use tracing_subscriber::EnvFilter;
+use tracing::{error, info, warn};
 
 use crate::rpc::fr_gouv_portail_control::{DynamicBackendSpec, GetCurrentBackendOutput};
 use crate::systemd::sd_notify_ready;
 
 mod acl;
 mod config;
+mod logging;
 mod proxy;
 mod rpc;
 mod state;
@@ -108,13 +107,7 @@ enum Commands {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    tracing_subscriber::fmt::fmt()
-        .with_env_filter(
-            EnvFilter::builder()
-                .with_default_directive(LevelFilter::INFO.into())
-                .from_env_lossy(),
-        )
-        .init();
+    logging::init();
 
     match cli.command {
         Commands::Rpc {
