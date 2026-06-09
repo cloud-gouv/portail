@@ -1,3 +1,4 @@
+use crate::config::KnownBackend;
 use crate::proxy::context::InitialRequestContext;
 use crate::proxy::protocol_detect::{ALPN_H2, ALPN_HTTP1_1};
 use crate::{
@@ -103,7 +104,7 @@ pub async fn serve_http2_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
 async fn handle_http_request(
     req: Request<Incoming>,
     ctx: InitialRequestContext,
-    settings: Arc<Settings>,
+    _settings: Arc<Settings>,
     state: Arc<RwLock<State>>,
     inbound_protocol: InboundHttpProtocol,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
@@ -134,7 +135,7 @@ async fn handle_http_request(
 
     let target_address = target_authority.to_string();
     let mut final_address = target_address.clone();
-    let mut backends: Vec<&BackendSettings> = Vec::with_capacity(1);
+    let mut backends: Vec<BackendSettings> = Vec::with_capacity(1);
     // We evaluate first whether we are allowed then we evaluate routes.
     let acl = &state.read().await.acl_rules;
 
@@ -193,10 +194,13 @@ async fn handle_http_request(
     if backends.is_empty()
         && let Some(ref backend_id) = state.read().await.default_backend
     {
-        let backend = settings
+        let backend = state
+            .read()
+            .await
             .backends
             .get(backend_id)
-            .unwrap_or_else(|| panic!("BUG: default backend {backend_id} went away from settings"));
+            .unwrap_or_else(|| panic!("BUG: default backend {backend_id} went away from state"))
+            .to_owned();
 
         backends.push(backend);
     }
@@ -250,27 +254,40 @@ async fn handle_http_request(
 
     let mut stream: Option<OutboundStream> = None;
     for backend in backends {
-        debug!(
-            "Backend {} selected for HTTP CONNECT to {}",
-            backend.target_address, final_address
-        );
-        match connect_to_http_proxy_backend(
-            backend,
-            &final_address,
-            state.clone(),
-            &inbound_protocol,
-        )
-        .await
-        {
-            Ok(upstream) => {
-                stream = Some(upstream);
-                break;
-            }
-            Err(err) => {
-                debug!(
-                    "Backend {} failed for HTTP CONNECT: {}, trying next",
-                    backend.target_address, err
+        match backend {
+            BackendSettings::UnresolvedBackend => {
+                // TODO: keep the IDs to print them here.
+                tracing::error!(
+                    "An unresolved backend was selected during HTTP CONNECT routing. This should not happen, rejecting the request."
                 );
+                let mut resp = Response::new(empty_body());
+                *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                return Ok(resp);
+            }
+            BackendSettings::KnownBackend(backend) => {
+                debug!(
+                    "Backend {} selected for HTTP CONNECT to {}",
+                    backend.target_address, final_address
+                );
+                match connect_to_http_proxy_backend(
+                    &backend,
+                    &final_address,
+                    state.clone(),
+                    &inbound_protocol,
+                )
+                .await
+                {
+                    Ok(upstream) => {
+                        stream = Some(upstream);
+                        break;
+                    }
+                    Err(err) => {
+                        debug!(
+                            "Backend {} failed for HTTP CONNECT: {}, trying next",
+                            backend.target_address, err
+                        );
+                    }
+                }
             }
         }
     }
@@ -327,7 +344,7 @@ fn empty_body() -> BoxBody<Bytes, hyper::Error> {
 ///
 /// When upstream is plain TCP, HTTP/1.1 is used.
 async fn connect_to_http_proxy_backend(
-    backend: &BackendSettings,
+    backend: &KnownBackend,
     final_address: &str,
     state: Arc<RwLock<State>>,
     inbound_protocol: &InboundHttpProtocol,

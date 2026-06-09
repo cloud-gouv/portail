@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use std::net::SocketAddr;
 use std::os::fd::FromRawFd;
 use std::{path::PathBuf, sync::Arc};
 use tokio::sync::RwLock;
@@ -7,7 +8,7 @@ use tracing::{error, level_filters::LevelFilter};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
-use crate::rpc::fr_gouv_portail_control::GetCurrentBackendOutput;
+use crate::rpc::fr_gouv_portail_control::{DynamicBackendSpec, GetCurrentBackendOutput};
 use crate::systemd::sd_notify_ready;
 
 mod acl;
@@ -51,6 +52,15 @@ enum RpcCommands {
 
     /// List all available backends via RPC.
     ListBackends,
+
+    /// Update a dynamic backend via RPC
+    UpdateDynamicBackend {
+        /// Identifier of the backend in the settings
+        backend_id: String,
+
+        #[arg(long)]
+        target_address: SocketAddr,
+    },
 }
 
 #[derive(Subcommand)]
@@ -171,7 +181,7 @@ async fn main() -> Result<()> {
                         .set_default_backend(None)
                         .await
                         .context("During Varlink low-level communications. Are you using same versions of Portail on both sides?")?
-                        .context("Failed to set default backend")?;
+                        .context("Failed to unset default backend")?;
 
                     if !json {
                         println!("Default backend unset successfully.");
@@ -194,7 +204,7 @@ async fn main() -> Result<()> {
                         .list_backends()
                         .await
                         .context("During Varlink low-level communications. Are you using same versions of Portail on both sides?")?
-                        .context("Failed to set default backend")?.backends;
+                        .context("Failed to list backends")?.backends;
 
                     if !json {
                         println!("List of backends:");
@@ -208,6 +218,34 @@ async fn main() -> Result<()> {
                     } else {
                         serde_json::to_writer(std::io::stdout(), &serde_json::json!(backends))
                             .context("While writing JSON")?;
+                    }
+                }
+
+                RpcCommands::UpdateDynamicBackend {
+                    backend_id,
+                    target_address,
+                } => {
+                    let mut connection = zlink::unix::connect(&rpc_socket).await.context(
+                        format!("Opening the RPC socket at path '{}'", rpc_socket.display()),
+                    )?;
+                    connection
+                        .update_dynamic_backend(&backend_id, DynamicBackendSpec {
+                            target_address: format!("{}", target_address),
+                            identity_aware: false,
+                            tls_server_name: None
+                        })
+                        .await
+                        .context("During Varlink low-level communications. Are you using same versions of Portail on both sides?")?
+                        .context("Failed to update the dynamic backend")?;
+
+                    if !json {
+                        println!("Backend updated.");
+                    } else {
+                        serde_json::to_writer(
+                            std::io::stdout(),
+                            &serde_json::json!({"success": true}),
+                        )
+                        .context("While writing JSON")?;
                     }
                 }
             }

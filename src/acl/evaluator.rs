@@ -162,7 +162,7 @@ impl<'s> EvaluationContext<'s> {
     pub fn evaluate_routes(
         &self,
         rules: &'s hir::ACLHir,
-    ) -> Result<Vec<&'s BackendSettings>, InterpretationError<'s>> {
+    ) -> Result<Vec<BackendSettings>, InterpretationError<'s>> {
         let mut routes = Vec::new();
         // At this point, we can assume that the set of rules are parsed and validated.
         // So we can assume each policy block contain the relevant amount of information and we
@@ -181,7 +181,7 @@ impl<'s> EvaluationContext<'s> {
             // We fulfill when, let's look at the recommended routes.
             routes.reserve(entry.r#use.len());
             for reco in &entry.r#use {
-                routes.push(reco);
+                routes.push(reco.to_owned());
             }
         }
 
@@ -250,7 +250,7 @@ impl<'s> EvaluationContext<'s> {
 mod tests {
     use crate::{
         acl::{Action, OwnedEvaluationContext},
-        config::BackendSettings,
+        config::{BackendSettings, KnownBackend},
     };
 
     #[cfg(test)]
@@ -498,19 +498,19 @@ mod tests {
 
         let backend1 = {
             let target_address = "1.1.1.1:443".parse().unwrap();
-            BackendSettings {
+            BackendSettings::KnownBackend(KnownBackend {
                 target_address,
                 identity_aware: false,
                 tls_server_name: crate::config::ServerName::from(target_address.ip()),
-            }
+            })
         };
         let backend2 = {
             let target_address = "1.1.1.2:443".parse().unwrap();
-            BackendSettings {
+            BackendSettings::KnownBackend(KnownBackend {
                 target_address,
                 identity_aware: false,
                 tls_server_name: crate::config::ServerName::from(target_address.ip()),
-            }
+            })
         };
 
         let hir = ACLHir {

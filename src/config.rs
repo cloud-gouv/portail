@@ -9,7 +9,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 pub use tokio_rustls::rustls::pki_types::ServerName;
 
 #[derive(Debug, Clone)]
-pub struct BackendSettings {
+pub struct KnownBackend {
     pub target_address: SocketAddr,
     /// Whether this backend requires a TLS connection with a client certificate.
     pub identity_aware: bool,
@@ -19,10 +19,20 @@ pub struct BackendSettings {
     pub tls_server_name: ServerName<'static>,
 }
 
+#[derive(Debug, Clone)]
+pub enum BackendSettings {
+    /// This is a backend (dynamic or not) which has been resolved to a backend.
+    KnownBackend(KnownBackend),
+    /// This is a dynamic backend for which we do not know the target address yet.
+    UnresolvedBackend,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 struct RawBackendSettings {
-    target_address: SocketAddr,
+    target_address: Option<SocketAddr>,
+    #[serde(default)]
+    dynamic: bool,
     #[serde(default)]
     identity_aware: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -35,17 +45,30 @@ impl<'de> Deserialize<'de> for BackendSettings {
         D: Deserializer<'de>,
     {
         let s = RawBackendSettings::deserialize(deserializer)?;
-        let tls_server_name = match s.tls_server_name {
-            Some(str) => ServerName::try_from(str)
-                .map_err(|e| de::Error::custom(format!("invalid tls_server_name: {e:?}")))?,
-            None => ServerName::from(s.target_address.ip()),
-        };
 
-        Ok(BackendSettings {
-            target_address: s.target_address,
-            identity_aware: s.identity_aware,
-            tls_server_name,
-        })
+        if !s.dynamic && s.target_address.is_none() {
+            return Err(de::Error::custom(
+                "Target address cannot be omitted if the backend is not dynamic",
+            ));
+        }
+
+        match s.target_address {
+            Some(tgt_address) => {
+                let tls_server_name = match s.tls_server_name {
+                    Some(str) => ServerName::try_from(str).map_err(|e| {
+                        de::Error::custom(format!("invalid tls_server_name: {e:?}"))
+                    })?,
+                    None => ServerName::from(tgt_address.ip()),
+                };
+
+                Ok(BackendSettings::KnownBackend(KnownBackend {
+                    target_address: tgt_address,
+                    identity_aware: s.identity_aware,
+                    tls_server_name,
+                }))
+            }
+            None => Ok(BackendSettings::UnresolvedBackend),
+        }
     }
 }
 
@@ -54,17 +77,32 @@ impl Serialize for BackendSettings {
     where
         S: Serializer,
     {
-        let tls_default = ServerName::from(self.target_address.ip());
-        let tls_server_name = if self.tls_server_name == tls_default {
-            None
-        } else {
-            Some(self.tls_server_name.to_str().into_owned())
-        };
+        match self {
+            Self::UnresolvedBackend => RawBackendSettings {
+                target_address: None,
+                identity_aware: false,
+                dynamic: true,
+                tls_server_name: None,
+            },
+            Self::KnownBackend(KnownBackend {
+                target_address,
+                identity_aware,
+                tls_server_name,
+            }) => {
+                let tls_default = ServerName::from(target_address.ip());
+                let tls_server_name = if *tls_server_name == tls_default {
+                    None
+                } else {
+                    Some(tls_server_name.to_str().into_owned())
+                };
 
-        RawBackendSettings {
-            target_address: self.target_address,
-            identity_aware: self.identity_aware,
-            tls_server_name,
+                RawBackendSettings {
+                    target_address: Some(*target_address),
+                    identity_aware: *identity_aware,
+                    dynamic: false,
+                    tls_server_name,
+                }
+            }
         }
         .serialize(serializer)
     }
@@ -93,6 +131,11 @@ pub struct EscapeSettings {
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct RPCSettings {
+    /// Administrative groups are allowed to call admin RPCs such as UpdateDynamicBackend.
+    /// They can disable the proxy functionality or bypass it by redirecting the
+    /// dynamic backend to an attacker-controlled target.
+    #[serde(default)]
+    pub admin_groups: Vec<String>,
     /// Trusted groups are allowed to call write RPC such as SetDefaultBackend or Reload.
     /// They cannot disable the proxy functionality nonetheless.
     #[serde(default)]
