@@ -11,9 +11,17 @@ type DynamicBackendSpec (
   tls_server_name: ?string
 )
 
+type KnownBackendSpec (
+  target_address: string,
+  identity_aware: bool,
+  tls_server_name: string
+)
+
 type BackendListItem (
     id: string,
-    current: bool
+    current: bool,
+    dynamic: bool,
+    spec: ?KnownBackendSpec
 )
 
 # A backend was passed to a method but was not found
