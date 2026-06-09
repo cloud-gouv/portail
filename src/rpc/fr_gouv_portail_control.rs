@@ -139,10 +139,31 @@ pub struct GetCurrentBackendOutput {
     pub backend_id: String,
 }
 
+/// A known backend specification.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, zlink::introspect::Type)]
+pub struct KnownBackendSpec {
+    pub target_address: String,
+    pub identity_aware: bool,
+    pub tls_server_name: String,
+}
+
+impl From<KnownBackend> for KnownBackendSpec {
+    fn from(value: KnownBackend) -> Self {
+        Self {
+            target_address: format!("{}", value.target_address),
+            identity_aware: value.identity_aware,
+            tls_server_name: value.tls_server_name.to_str().into_owned(),
+        }
+    }
+}
+
+/// Returned as part of ListBackends method.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, zlink::introspect::Type)]
 pub struct BackendListItem {
     pub id: String,
     pub current: bool,
+    pub dynamic: bool,
+    pub spec: Option<KnownBackendSpec>,
 }
 
 /// Output parameters for the ListBackends method.
