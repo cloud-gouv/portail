@@ -43,6 +43,7 @@ pub async fn serve_http1_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
     ctx: InitialRequestContext,
     stream: S,
 ) -> Result<(), ProxyError> {
+    debug!("{}: HTTP/1.1 CONNECT request", ctx.client_address);
     let io = TokioIo::new(stream);
 
     // TODO: update ctx
@@ -73,6 +74,7 @@ pub async fn serve_http2_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
     ctx: InitialRequestContext,
     stream: S,
 ) -> Result<(), ProxyError> {
+    debug!("{}: HTTP/2 CONNECT request", ctx.client_address);
     let io = TokioIo::new(stream);
 
     // TODO: update ctx
@@ -134,6 +136,7 @@ async fn handle_http_request(
 
     let target_address = target_authority.to_string();
     let mut final_address = target_address.clone();
+    debug!("{}: HTTP CONNECT request to {}", ctx.client_address, final_address);
     let mut backends: Vec<&BackendSettings> = Vec::with_capacity(1);
     // We evaluate first whether we are allowed then we evaluate routes.
     let acl = &state.read().await.acl_rules;
