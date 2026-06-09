@@ -181,7 +181,7 @@ async fn main() -> Result<()> {
                         .set_default_backend(None)
                         .await
                         .context("During Varlink low-level communications. Are you using same versions of Portail on both sides?")?
-                        .context("Failed to set default backend")?;
+                        .context("Failed to unset default backend")?;
 
                     if !json {
                         println!("Default backend unset successfully.");
@@ -204,7 +204,7 @@ async fn main() -> Result<()> {
                         .list_backends()
                         .await
                         .context("During Varlink low-level communications. Are you using same versions of Portail on both sides?")?
-                        .context("Failed to set default backend")?.backends;
+                        .context("Failed to list backends")?.backends;
 
                     if !json {
                         println!("List of backends:");
