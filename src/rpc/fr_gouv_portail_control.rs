@@ -50,7 +50,7 @@ impl Display for ControlError {
             }
 
             Self::PermissionDenied => {
-                f.write_str("Permission was denied, are you in the trusted group?")?
+                f.write_str("Permission was denied, are you in the authorized group?")?
             }
 
             Self::ImmutableBackend => {
