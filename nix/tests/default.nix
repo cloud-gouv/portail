@@ -684,6 +684,11 @@ in
 
         users.groups.portailers = {};
         users.groups.heloise = {};
+        users.groups.portail-admins = {};
+        users.users.portail-admin = {
+          isNormalUser = true;
+          extraGroups = [ "portail-admins" ];
+        };
         users.users.alice = {
           isNormalUser = true;
           # supplementary group, not main group.
@@ -704,7 +709,10 @@ in
 
           settings = {
             default-backend = "alpha";
-            rpc.trusted-groups = [ "heloise" "portailers" ];
+            rpc = {
+              admin-groups = [ "portail-admins" ];
+              trusted-groups = [ "heloise" "portailers" ];
+            };
             backends = {
               alpha = {
                 target-address =
@@ -712,6 +720,9 @@ in
               };
 
               beta.target-address = "${nodes.microsocks-beta.networking.primaryIPAddress}:8080";
+
+              # Target address is not known in advance.
+              gamma.dynamic = true;
             };
           };
 
@@ -767,6 +778,11 @@ in
           else:
             raise e
 
+      def read_backend(backend_id: str) -> dict[str, str]:
+        backends = rpc("list-backends")
+        backend = [b for b in backends if b.get('id') == backend_id][0]
+        return backend.get("spec")
+
       # Verify that RPC permissions are set correctly.
       # Everyone can read, including the attacker.
       # Only trusted groups can change backends.
@@ -793,7 +809,14 @@ in
       backends = rpc("list-backends")
       assert any(b.get('current', False) for b in backends), "Expected at least one backend to be active"
       assert [b for b in backends if b.get('current', False)][0].get('id') == "alpha", "Expected active backend to be alpha"
-      assert len(backends) == 2, "Expected two backends (alpha and beta)"
+      assert len(backends) == 3, "Expected two backends (alpha, beta and gamma)"
+
+      # Dynamic backend RPC tests.
+      for user in ("alice", "heloise", "attacker"):
+        assert rpc("update-dynamic-backend", "gamma", "--target-address", "10.0.0.1:443", user=user, fail=True) is None, "Unexpectedly was able to update the dynamic backend gamma even though we are not an admin user"
+
+      assert rpc("update-dynamic-backend", "gamma", "--target-address", "10.0.0.1:443", user="portail-admin").get("success", False), "Unable to update the dynamic backend as portail-admin"
+      assert read_backend("gamma")["target_address"] == "10.0.0.1:443", "Target address change after dynamic update was not effective"
 
       # Test SOCKS5 curl -> portail -> portail alpha -> corp-server
       result = json.loads(node.succeed(
