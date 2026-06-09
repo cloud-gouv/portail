@@ -26,11 +26,12 @@ tokio = { version = "^1", features = ["full"] }
 tokio-rustls = "^0.26"
 toml = "^1"
 tracing = "^0.1"
-tracing-subscriber = { version = "^0.3", features = ["env-filter", "json"] }
+tracing-subscriber = { version = "^0.3", features = ["env-filter", "json", "std"] }
 winnow = "^1"
 zlink = "^0.5"
 rustls-pki-types = "^1"
 uuid = { version = "1.23.3", features = ["v4"] }
+tracing-appender = "0.2.5"
 
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }

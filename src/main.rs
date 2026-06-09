@@ -1,11 +1,12 @@
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::net::SocketAddr;
 use std::os::fd::FromRawFd;
 use std::{path::PathBuf, sync::Arc};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
+use crate::logging::LogPreset;
 use crate::rpc::fr_gouv_portail_control::{DynamicBackendSpec, GetCurrentBackendOutput};
 use crate::systemd::sd_notify_ready;
 
@@ -62,6 +63,27 @@ enum RpcCommands {
     },
 }
 
+#[derive(ValueEnum, Debug, Clone, Copy)]
+pub enum UserLogPreset {
+    /// All logs will be printed nicely on stdout (traces) and stderr (errors)
+    Development,
+    /// Errors will be printed nicely on stderr but traces and errors will be routed into files as
+    /// well in /var/log/portail in JSON format
+    Systemd,
+    /// All traces (errors included) will be printed in JSON format on stdout and stderr
+    Container,
+}
+
+impl From<UserLogPreset> for LogPreset {
+    fn from(value: UserLogPreset) -> Self {
+        match value {
+            UserLogPreset::Development => Self::Development,
+            UserLogPreset::Systemd => Self::Systemd,
+            UserLogPreset::Container => Self::Container,
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Run the portail daemon.
@@ -75,6 +97,9 @@ enum Commands {
         #[arg(long, value_name = "FILE")]
         /// Path where to create the RPC socket if the daemon must create it itself
         bind_rpc_socket: Option<String>,
+        /// Preset for logging, defaults to development
+        #[arg(long, default_value = "development")]
+        log_preset: UserLogPreset,
     },
 
     /// Run RPC commands to the daemon.
@@ -100,6 +125,9 @@ enum Commands {
         config: PathBuf,
         /// Path to the ACL file
         acl_file: PathBuf,
+        /// Whether to provide JSON output for scripting.
+        #[arg(long, value_name = "BOOLEAN", default_value_t = false)]
+        json: bool,
     },
 }
 
@@ -107,14 +135,19 @@ enum Commands {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    logging::init();
-
     match cli.command {
         Commands::Rpc {
             rpc_socket,
             json,
             command,
         } => {
+            let preset = if json {
+                LogPreset::Scripting
+            } else {
+                LogPreset::Cli
+            };
+            let _guards = logging::init(preset).expect("Failed to initialize logging");
+
             let mut connection = zlink::unix::connect(&rpc_socket).await.context(format!(
                 "Opening the RPC socket at path '{}'",
                 rpc_socket.display()
@@ -238,7 +271,9 @@ async fn main() -> Result<()> {
             config,
             bind_proxy_address,
             bind_rpc_socket,
+            log_preset,
         } => {
+            let _guards = logging::init(log_preset.into()).expect("Failed to initialize logging");
             info!("Reading Portail settings from '{}'", config.display());
             let settings: Arc<config::Settings> = Arc::new(config::init(&config));
 
@@ -293,7 +328,17 @@ async fn main() -> Result<()> {
 
             info!("Exiting...");
         }
-        Commands::CheckACLSyntax { config, acl_file } => {
+        Commands::CheckACLSyntax {
+            config,
+            json,
+            acl_file,
+        } => {
+            let preset = if json {
+                LogPreset::Scripting
+            } else {
+                LogPreset::Cli
+            };
+            let guards = logging::init(preset).expect("Failed to initialize logging");
             let contents = String::from_utf8_lossy(
                 &std::fs::read(&acl_file).context("while reading ACL file")?,
             )
@@ -301,12 +346,13 @@ async fn main() -> Result<()> {
             let settings: Arc<config::Settings> = Arc::new(config::init(&config));
             match acl::load_rules_from_str(contents.as_str(), &settings) {
                 Ok(rules) => info!(
-                    "Parsed {} ACL policies and {} routes successfully",
-                    rules.hir.policies.len(),
-                    rules.hir.routes.len()
+                    n_policies = %rules.hir.policies.len(),
+                    n_routes = %rules.hir.routes.len(),
+                    "Parsed ACL policies and routes successfully",
                 ),
                 Err(err) => {
                     error!("Error while parsing the ACL rules:\n{err}");
+                    drop(guards);
                     std::process::exit(1);
                 }
             }
