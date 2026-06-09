@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use std::os::fd::FromRawFd;
 use std::{path::PathBuf, sync::Arc};
 use tokio::sync::RwLock;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::rpc::fr_gouv_portail_control::GetCurrentBackendOutput;
 use crate::systemd::sd_notify_ready;
@@ -209,11 +209,14 @@ async fn main() -> Result<()> {
             bind_proxy_address,
             bind_rpc_socket,
         } => {
+            info!("Reading Portail settings from '{}'", config.display());
             let settings: Arc<config::Settings> = Arc::new(config::init(&config));
 
             let state: Arc<RwLock<state::State>> = Arc::new(RwLock::new(
                 state::init(&settings).context("While initializing application state")?,
             ));
+
+            debug!("Loaded Portail settings and state");
 
             let fds_named = systemd::listen_fds_named();
 
@@ -241,20 +244,24 @@ async fn main() -> Result<()> {
                 tokio::net::UnixListener::from_std(std)?
             };
 
-            info!("starting services");
+            info!("Starting services");
 
-            if let Err(e) = sd_notify_ready() {
-                warn!("failed to notify systemd about readiness: {e}");
-            } else {
-                info!("notified systemd about readiness");
-            }
-
-            tokio::try_join!(
+            let (proxy_fut, rpc_fut) = (
                 proxy::start(settings.clone(), state.clone(), tcp_listener),
                 rpc::start(settings.clone(), state.clone(), rpc_listener),
-            )?;
+            );
 
-            info!("exiting");
+            if let Err(e) = sd_notify_ready() {
+                warn!("Failed to notify systemd about readiness: {e}");
+            } else {
+                debug!("Notified systemd about readiness");
+            }
+
+            info!("Services are ready.");
+
+            tokio::try_join!(proxy_fut, rpc_fut)?;
+
+            info!("Exiting...");
         }
         Commands::CheckACLSyntax { config, acl_file } => {
             let contents = String::from_utf8_lossy(
