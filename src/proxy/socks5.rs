@@ -85,6 +85,8 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
     let mut ctx = ctx.as_local();
     let should_resolve_dns: bool = state.read().await.default_backend.is_none();
 
+    debug!("{}: Serving SOCKS5 proxy (should resolve DNS? {})", ctx.client_address, should_resolve_dns);
+
     let (proto, cmd, target_addr) = Socks5ServerProtocol::accept_no_auth(socket)
         .await?
         .read_command()
@@ -95,16 +97,19 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
         crate::acl::ast::ConcreteOperand::String("socks5"),
     );
 
+    debug!("{}: SOCKS5 target address is '{}'", ctx.client_address, target_addr);
     let mut target_context = TargetContext {
         initial_target: target_addr.clone().into(),
         resolved_target: None,
     };
+
     let target_addr = if should_resolve_dns {
         target_addr.resolve_dns().await?
     } else {
         target_addr
     };
 
+    debug!("{}: SOCKS5 resolved target address is '{}'", ctx.client_address, target_addr);
     let (host, port) = target_context.initial_target.clone().into_string_and_port();
 
     ctx.acl_ctx
@@ -123,12 +128,13 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
     };
 
     if cmd != Socks5Command::TCPConnect && cmd != Socks5Command::UDPAssociate {
-        debug!("Unsupported SOCKS5 command received, terminating connection");
+        debug!("{}: Unsupported SOCKS5 command received, terminating connection", ctx.client_address);
         proto.reply_error(&ReplyError::CommandNotSupported).await?;
         return Err(ReplyError::CommandNotSupported.into());
     }
 
     if cmd == Socks5Command::TCPConnect {
+        debug!("{}: SOCKS5 command is TCP CONNECT", ctx.client_address);
         ctx.acl_ctx.insert(
             "proxy.cmd",
             crate::acl::ast::ConcreteOperand::String("tcp_connect"),
@@ -136,6 +142,7 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
     }
 
     if cmd == Socks5Command::UDPAssociate {
+        debug!("{}: SOCKS5 command is UDP ASSOCIATE", ctx.client_address);
         ctx.acl_ctx.insert(
             "proxy.cmd",
             crate::acl::ast::ConcreteOperand::String("udp_associate"),
@@ -202,13 +209,14 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
     match assessment.action {
         // FIXME: render the deny template if there's one.
         crate::acl::Action::Deny(_explain_template) => {
-            info!("Request to {0} is blocked", &target_context.initial_target);
+            info!("{}: SOCKS5: Request to {} is blocked", ctx.client_address, &target_context.initial_target);
             proto.reply_error(&ReplyError::ConnectionNotAllowed).await?;
             return Ok(());
         }
         crate::acl::Action::Redirect(target) => {
             info!(
-                "Request to {} redirected to {}",
+                "{}: SOCKS5: Request to {} redirected to {}",
+                ctx.client_address,
                 &target_context.initial_target, target
             );
             final_addr = TargetAddr::Domain(
