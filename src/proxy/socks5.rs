@@ -142,7 +142,7 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
         );
     }
 
-    let mut backends: Vec<&BackendSettings> = Vec::with_capacity(1);
+    let mut backends: Vec<BackendSettings> = Vec::with_capacity(1);
     let acl = &state.read().await.acl_rules;
 
     // We evaluate first the routes as it can influence the ACL in case of a local exit.
@@ -165,10 +165,13 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
     if backends.is_empty()
         && let Some(ref backend_id) = state.read().await.default_backend
     {
-        let backend = opts
+        let backend = state
+            .read()
+            .await
             .backends
             .get(backend_id)
-            .unwrap_or_else(|| panic!("BUG: default backend {backend_id} went away from settings"));
+            .unwrap_or_else(|| panic!("BUG: default backend {backend_id} went away from settings"))
+            .to_owned();
 
         backends.push(backend);
     }
@@ -242,7 +245,7 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
                     &backend.target_address
                 );
 
-                match connect_to_backend(backend, &final_addr, state.clone()).await {
+                match connect_to_backend(&backend, &final_addr, state.clone()).await {
                     Ok(stream) => {
                         route_to_backend(stream, proto).await?;
                         return Ok(());

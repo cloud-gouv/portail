@@ -162,7 +162,7 @@ impl<'s> EvaluationContext<'s> {
     pub fn evaluate_routes(
         &self,
         rules: &'s hir::ACLHir,
-    ) -> Result<Vec<&'s BackendSettings>, InterpretationError<'s>> {
+    ) -> Result<Vec<BackendSettings>, InterpretationError<'s>> {
         let mut routes = Vec::new();
         // At this point, we can assume that the set of rules are parsed and validated.
         // So we can assume each policy block contain the relevant amount of information and we
@@ -181,7 +181,7 @@ impl<'s> EvaluationContext<'s> {
             // We fulfill when, let's look at the recommended routes.
             routes.reserve(entry.r#use.len());
             for reco in &entry.r#use {
-                routes.push(reco);
+                routes.push(reco.to_owned());
             }
         }
 
