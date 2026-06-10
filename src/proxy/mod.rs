@@ -12,7 +12,7 @@ use tokio_rustls::{
 };
 use tracing::error;
 
-use crate::{config::Settings, proxy::context::InitialRequestContext, state::State};
+use crate::{config::Settings, proxy::context::OwnedRequestContext, state::State};
 
 mod client_tls;
 mod context;
@@ -36,7 +36,7 @@ enum ProxyError {
 async fn serve_authenticated_proxy(
     settings: Arc<Settings>,
     state: Arc<RwLock<State>>,
-    ctx: InitialRequestContext,
+    ctx: OwnedRequestContext,
     stream: TlsStream<tokio::net::TcpStream>,
 ) -> anyhow::Result<()> {
     // TODO: extract context
@@ -58,7 +58,7 @@ async fn serve_authenticated_proxy(
 async fn serve_unauthenticated_proxy(
     settings: Arc<Settings>,
     state: Arc<RwLock<State>>,
-    ctx: InitialRequestContext,
+    ctx: OwnedRequestContext,
     stream: tokio::net::TcpStream,
 ) -> anyhow::Result<()> {
     let (proto, stream) = detect_protocol(InboundStream::TcpStream(stream)).await?;
@@ -127,7 +127,7 @@ pub async fn start(
         let acceptor = tls_acceptor.clone();
         let settings = settings.clone();
         let state = state.clone();
-        let ctx = InitialRequestContext::new(addr);
+        let ctx = OwnedRequestContext::new(addr);
 
         tokio::spawn(async move {
             match detect_tls(&socket).await {
