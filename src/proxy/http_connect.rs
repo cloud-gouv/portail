@@ -1,4 +1,4 @@
-use crate::proxy::context::InitialRequestContext;
+use crate::proxy::context::OwnedRequestContext;
 use crate::proxy::protocol_detect::{ALPN_H2, ALPN_HTTP1_1};
 use crate::{
     config::{BackendSettings, Settings},
@@ -40,7 +40,7 @@ enum InboundHttpProtocol {
 pub async fn serve_http1_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     settings: Arc<Settings>,
     state: Arc<RwLock<State>>,
-    ctx: InitialRequestContext,
+    ctx: OwnedRequestContext,
     stream: S,
 ) -> Result<(), ProxyError> {
     debug!("{}: HTTP/1.1 CONNECT request", ctx.client_address);
@@ -71,7 +71,7 @@ pub async fn serve_http1_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
 pub async fn serve_http2_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     settings: Arc<Settings>,
     state: Arc<RwLock<State>>,
-    ctx: InitialRequestContext,
+    ctx: OwnedRequestContext,
     stream: S,
 ) -> Result<(), ProxyError> {
     debug!("{}: HTTP/2 CONNECT request", ctx.client_address);
@@ -104,12 +104,12 @@ pub async fn serve_http2_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
 
 async fn handle_http_request(
     req: Request<Incoming>,
-    ctx: InitialRequestContext,
+    initial_ctx: OwnedRequestContext,
     settings: Arc<Settings>,
     state: Arc<RwLock<State>>,
     inbound_protocol: InboundHttpProtocol,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
-    let mut ctx = ctx.as_local();
+    let mut ctx = initial_ctx.as_local();
 
     if req.method() != Method::CONNECT {
         debug!(

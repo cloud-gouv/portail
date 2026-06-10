@@ -17,7 +17,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     config::{BackendSettings, Settings},
-    proxy::context::{InitialRequestContext, TargetContext},
+    proxy::context::{OwnedRequestContext, TargetContext},
     state::State,
 };
 
@@ -79,7 +79,7 @@ pub async fn route_to_backend<S: AsyncRead + Unpin + AsyncWrite>(
 pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
     opts: Arc<Settings>,
     state: Arc<RwLock<State>>,
-    ctx: InitialRequestContext,
+    ctx: OwnedRequestContext,
     socket: S,
 ) -> Result<(), SocksError> {
     let mut ctx = ctx.as_local();

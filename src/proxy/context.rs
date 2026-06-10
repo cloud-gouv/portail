@@ -55,7 +55,7 @@ pub struct TargetContext {
 }
 
 #[derive(Debug, Clone)]
-pub struct InitialRequestContext {
+pub struct OwnedRequestContext {
     pub trace_id: uuid::Uuid,
     pub client_address: SocketAddr,
     pub acl_ctx: crate::acl::OwnedEvaluationContext,
@@ -69,7 +69,7 @@ pub struct LocalRequestContext<'s> {
     pub acl_ctx: crate::acl::EvaluationContext<'s>,
 }
 
-impl InitialRequestContext {
+impl OwnedRequestContext {
     pub fn new(client_address: SocketAddr) -> Self {
         Self {
             client_address,
