@@ -63,7 +63,6 @@ pub struct OwnedRequestContext {
 
 #[derive(Debug, Clone)]
 pub struct LocalRequestContext<'s> {
-    #[allow(dead_code)]
     pub client_address: &'s SocketAddr,
     pub trace_id: uuid::Uuid,
     pub acl_ctx: crate::acl::EvaluationContext<'s>,
