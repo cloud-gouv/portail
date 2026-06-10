@@ -26,7 +26,7 @@ tokio = { version = "^1", features = ["full"] }
 tokio-rustls = "^0.26"
 toml = "^1"
 tracing = "^0.1"
-tracing-subscriber = { version = "^0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "^0.3", features = ["env-filter", "json"] }
 winnow = "^1"
 zlink = "^0.5"
 rustls-pki-types = "^1"
