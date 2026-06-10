@@ -56,6 +56,7 @@ pub struct TargetContext {
 
 #[derive(Debug, Clone)]
 pub struct InitialRequestContext {
+    pub trace_id: uuid::Uuid,
     pub client_address: SocketAddr,
     pub acl_ctx: crate::acl::OwnedEvaluationContext,
 }
@@ -64,6 +65,8 @@ pub struct InitialRequestContext {
 pub struct LocalRequestContext<'s> {
     #[allow(dead_code)]
     pub client_address: &'s SocketAddr,
+    #[allow(dead_code)]
+    pub trace_id: uuid::Uuid,
     pub acl_ctx: crate::acl::EvaluationContext<'s>,
 }
 
@@ -71,6 +74,7 @@ impl InitialRequestContext {
     pub fn new(client_address: SocketAddr) -> Self {
         Self {
             client_address,
+            trace_id: uuid::Uuid::new_v4(),
             acl_ctx: crate::acl::OwnedEvaluationContext::empty(),
         }
     }
@@ -79,6 +83,7 @@ impl InitialRequestContext {
         LocalRequestContext {
             client_address: &self.client_address,
             acl_ctx: self.acl_ctx.fork(),
+            trace_id: self.trace_id,
         }
     }
 }
