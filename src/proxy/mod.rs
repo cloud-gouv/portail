@@ -4,15 +4,15 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use tokio_rustls::{
-    TlsAcceptor, TlsStream,
     rustls::{
-        ServerConfig,
         server::{VerifierBuilderError, WebPkiClientVerifier},
+        ServerConfig,
     },
+    TlsAcceptor, TlsStream,
 };
-use tracing::error;
+use tracing::{debug, error};
 
-use crate::{config::Settings, proxy::context::InitialRequestContext, state::State};
+use crate::{config::Settings, proxy::context::OwnedRequestContext, state::State};
 
 mod client_tls;
 mod context;
@@ -22,7 +22,7 @@ mod socks5;
 
 use context::InboundStream;
 use http_connect::{serve_http1_connect, serve_http2_connect};
-use protocol_detect::{ALPN_H2, ALPN_HTTP1_1, DetectedProtocol, detect_protocol, detect_tls};
+use protocol_detect::{detect_protocol, detect_tls, DetectedProtocol, ALPN_H2, ALPN_HTTP1_1};
 use socks5::serve_socks5;
 
 #[derive(Debug, Error)]
@@ -36,7 +36,7 @@ enum ProxyError {
 async fn serve_authenticated_proxy(
     settings: Arc<Settings>,
     state: Arc<RwLock<State>>,
-    ctx: InitialRequestContext,
+    ctx: OwnedRequestContext,
     stream: TlsStream<tokio::net::TcpStream>,
 ) -> anyhow::Result<()> {
     // TODO: extract context
@@ -58,7 +58,7 @@ async fn serve_authenticated_proxy(
 async fn serve_unauthenticated_proxy(
     settings: Arc<Settings>,
     state: Arc<RwLock<State>>,
-    ctx: InitialRequestContext,
+    ctx: OwnedRequestContext,
     stream: tokio::net::TcpStream,
 ) -> anyhow::Result<()> {
     let (proto, stream) = detect_protocol(InboundStream::TcpStream(stream)).await?;
@@ -123,18 +123,21 @@ pub async fn start(
 
     loop {
         let (socket, addr) = listener.accept().await?;
+        debug!("Accepting a proxy connection from {}", addr);
 
         let acceptor = tls_acceptor.clone();
         let settings = settings.clone();
         let state = state.clone();
-        let ctx = InitialRequestContext::new(addr);
+        let ctx = OwnedRequestContext::new(addr);
 
         tokio::spawn(async move {
             match detect_tls(&socket).await {
                 Ok(true) => {
+                    debug!("{}: TLS detected", addr);
                     if let Some(acceptor) = acceptor {
                         match acceptor.accept(socket).await {
                             Ok(tls_stream) => {
+                                debug!("{}: Authenticated TLS stream (client certificates)", addr);
                                 if let Err(e) = serve_authenticated_proxy(
                                     settings,
                                     state,
@@ -158,6 +161,10 @@ pub async fn start(
                 }
 
                 Ok(false) => {
+                    debug!(
+                        "{}: No TLS detected, serving unauthenticated requests",
+                        addr
+                    );
                     if let Err(e) = serve_unauthenticated_proxy(settings, state, ctx, socket).await
                     {
                         error!("Proxy error from {addr}: {e:?}");

@@ -1,4 +1,4 @@
-use crate::proxy::context::InitialRequestContext;
+use crate::proxy::context::OwnedRequestContext;
 use crate::proxy::protocol_detect::{ALPN_H2, ALPN_HTTP1_1};
 use crate::{
     config::{BackendSettings, Settings},
@@ -15,6 +15,7 @@ use hyper::{
     service::service_fn,
 };
 use hyper_util::rt::{TokioExecutor, TokioIo};
+use tokio::time::Instant;
 use std::io;
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -28,6 +29,7 @@ impl<T: AsyncRead + AsyncWrite> OutboundStreamIo for T {}
 
 type OutboundStream = Box<dyn OutboundStreamIo + Send + Unpin>;
 
+#[derive(Debug)]
 enum InboundHttpProtocol {
     Http1,
     Http2,
@@ -40,9 +42,10 @@ enum InboundHttpProtocol {
 pub async fn serve_http1_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     settings: Arc<Settings>,
     state: Arc<RwLock<State>>,
-    ctx: InitialRequestContext,
+    ctx: OwnedRequestContext,
     stream: S,
 ) -> Result<(), ProxyError> {
+    debug!("{}: HTTP/1.1 CONNECT request", ctx.client_address);
     let io = TokioIo::new(stream);
 
     // TODO: update ctx
@@ -70,9 +73,10 @@ pub async fn serve_http1_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
 pub async fn serve_http2_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     settings: Arc<Settings>,
     state: Arc<RwLock<State>>,
-    ctx: InitialRequestContext,
+    ctx: OwnedRequestContext,
     stream: S,
 ) -> Result<(), ProxyError> {
+    debug!("{}: HTTP/2 CONNECT request", ctx.client_address);
     let io = TokioIo::new(stream);
 
     // TODO: update ctx
@@ -100,19 +104,20 @@ pub async fn serve_http2_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
     Ok(())
 }
 
+#[tracing::instrument(skip_all, fields(inbound_protocol, uri = %req.uri(), method = %req.method(), trace_id = %initial_ctx.trace_id, client_address = %initial_ctx.client_address))]
 async fn handle_http_request(
     req: Request<Incoming>,
-    ctx: InitialRequestContext,
+    initial_ctx: OwnedRequestContext,
     settings: Arc<Settings>,
     state: Arc<RwLock<State>>,
     inbound_protocol: InboundHttpProtocol,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
-    let mut ctx = ctx.as_local();
+    let mut ctx = initial_ctx.as_local();
+    let start = Instant::now();
 
     if req.method() != Method::CONNECT {
         debug!(
-            "Unsupported HTTP method `{}` received, terminating connection",
-            req.method()
+            "Unsupported HTTP method received, terminating connection",
         );
         // TODO: we might want to handle this case in the future
         let mut resp = Response::new(empty_body());
@@ -134,6 +139,8 @@ async fn handle_http_request(
 
     let target_address = target_authority.to_string();
     let mut final_address = target_address.clone();
+    debug!(final_address = %final_address,
+        "HTTP CONNECT request");
     let mut backends: Vec<&BackendSettings> = Vec::with_capacity(1);
     // We evaluate first whether we are allowed then we evaluate routes.
     let acl = &state.read().await.acl_rules;
@@ -231,16 +238,20 @@ async fn handle_http_request(
     match assessment.action {
         // FIXME: render the deny template if there's one.
         crate::acl::Action::Deny(_explain_template) => {
-            info!("Request to {} is blocked", target_authority.host());
+            info!(
+                duration_us = start.elapsed().as_micros(),
+                "Request denied by ACL",
+            );
             let mut resp = Response::new(empty_body());
             *resp.status_mut() = StatusCode::FORBIDDEN;
             return Ok(resp);
         }
         crate::acl::Action::Redirect(target) => {
             info!(
-                "Request to {} redirected to {}",
-                target_authority.host(),
-                target
+                original_host = %target_authority.host(),
+                redirected_to = %target,
+                duration_us = start.elapsed().as_micros(),
+                "Request redirected by ACL",
             );
             final_address = target.to_string();
         }
@@ -248,11 +259,18 @@ async fn handle_http_request(
         _ => {}
     }
 
+    info!(
+        duration_us = start.elapsed().as_micros(),
+        "Request allowed by ACL",
+    );
+
     let mut stream: Option<OutboundStream> = None;
+    let start = Instant::now();
     for backend in backends {
         debug!(
-            "Backend {} selected for HTTP CONNECT to {}",
-            backend.target_address, final_address
+            address = %final_address,
+            backend = ?backend,
+            "Backend selected for HTTP CONNECT"
         );
         match connect_to_http_proxy_backend(
             backend,
@@ -263,25 +281,47 @@ async fn handle_http_request(
         .await
         {
             Ok(upstream) => {
+                debug!(
+                    address = %final_address,
+                    backend = ?backend,
+                    duration_ms = start.elapsed().as_millis(),
+                    "Stream established to upstream backend"
+                );
+
                 stream = Some(upstream);
                 break;
             }
             Err(err) => {
                 debug!(
-                    "Backend {} failed for HTTP CONNECT: {}, trying next",
-                    backend.target_address, err
+                    backend = ?backend,
+                    duration_ms = start.elapsed().as_millis(),
+                    "Backend failed for HTTP CONNECT: {}, trying next",
+                    err
                 );
             }
         }
     }
     if stream.is_none() {
         debug!(
-            "No backend, establishing a direct connection to `{}`",
-            final_address
+            address = %final_address,
+            duration_ms = start.elapsed().as_millis(),
+            "No backend, establishing a direct connection to the target"
         );
+        let start = Instant::now();
         match TcpStream::connect(&final_address).await {
-            Ok(socket) => stream = Some(Box::new(socket)),
-            Err(e) => warn!("Direct connection to `{}` failed: {}", final_address, e),
+            Ok(socket) => {
+                debug!(
+                    address = %final_address,
+                    duration_ms = start.elapsed().as_millis(),
+                    "Stream directly established to final address (local exit)"
+                );
+                stream = Some(Box::new(socket))
+            },
+            Err(e) => warn!(
+                address = %final_address,
+                duration_ms = start.elapsed().as_millis(),
+                "Direct connection failed: {}",
+                e),
         }
     }
 
@@ -292,14 +332,26 @@ async fn handle_http_request(
     };
 
     tokio::task::spawn(async move {
+        let ctx = initial_ctx;
+        let start = Instant::now();
         match hyper::upgrade::on(req).await {
             Ok(upgraded) => {
                 let mut client = TokioIo::new(upgraded);
-                if let Err(e) = tokio::io::copy_bidirectional(&mut client, &mut *stream).await {
-                    error!("CONNECT tunnel error: {}", e);
+                match tokio::io::copy_bidirectional(&mut client, &mut *stream).await {
+                    Err(e) => error!(trace_id = %ctx.trace_id, client_address = %ctx.client_address, duration_ms = start.elapsed().as_millis(), "CONNECT tunnel error: {}", e),
+                    Ok((n_bytes_sent, n_bytes_recv)) => {
+                        info!(
+                            trace_id = %ctx.trace_id,
+                            client_address = %ctx.client_address,
+                            n_bytes_sent = %n_bytes_sent,
+                            n_bytes_recv = %n_bytes_recv,
+                            duration_ms = start.elapsed().as_millis(),
+                            "CONNECT tunnel finished successfully"
+                        );
+                    }
                 }
             }
-            Err(e) => debug!("CONNECT upgrade error: {}", e),
+            Err(e) => error!(trace_id = %ctx.trace_id, client_address = %ctx.client_address, "CONNECT upgrade error: {}", e),
         }
     });
 
