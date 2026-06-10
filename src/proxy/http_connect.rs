@@ -15,6 +15,7 @@ use hyper::{
     service::service_fn,
 };
 use hyper_util::rt::{TokioExecutor, TokioIo};
+use tokio::time::Instant;
 use std::io;
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -103,7 +104,7 @@ pub async fn serve_http2_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
     Ok(())
 }
 
-#[tracing::instrument(skip(req, state), fields(inbound_protocol, uri = %req.uri(), method = %req.method(), trace_id = %initial_ctx.trace_id, client_address = %initial_ctx.client_address))]
+#[tracing::instrument(skip_all, fields(inbound_protocol, uri = %req.uri(), method = %req.method(), trace_id = %initial_ctx.trace_id, client_address = %initial_ctx.client_address))]
 async fn handle_http_request(
     req: Request<Incoming>,
     initial_ctx: OwnedRequestContext,
@@ -112,11 +113,10 @@ async fn handle_http_request(
     inbound_protocol: InboundHttpProtocol,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
     let mut ctx = initial_ctx.as_local();
+    let start = Instant::now();
 
     if req.method() != Method::CONNECT {
         debug!(
-            trace_id = %ctx.trace_id,
-            method = %req.method(),
             "Unsupported HTTP method received, terminating connection",
         );
         // TODO: we might want to handle this case in the future
@@ -131,7 +131,7 @@ async fn handle_http_request(
     );
 
     let Some(target_authority) = req.uri().authority() else {
-        debug!(trace_id = %ctx.trace_id, uri = %req.uri(), "Invalid authority in CONNECT URI, terminating connection");
+        debug!("Invalid authority in CONNECT URI, terminating connection");
         let mut resp = Response::new(empty_body());
         *resp.status_mut() = StatusCode::BAD_REQUEST;
         return Ok(resp);
@@ -139,9 +139,7 @@ async fn handle_http_request(
 
     let target_address = target_authority.to_string();
     let mut final_address = target_address.clone();
-    debug!(trace_id = %ctx.trace_id,
-        client_address = %ctx.client_address,
-        final_address = %final_address,
+    debug!(final_address = %final_address,
         "HTTP CONNECT request");
     let mut backends: Vec<&BackendSettings> = Vec::with_capacity(1);
     // We evaluate first whether we are allowed then we evaluate routes.
@@ -187,7 +185,6 @@ async fn handle_http_request(
         Err(failure) => {
             let mut resp = Response::new(empty_body());
             warn!(
-                trace_id = %ctx.trace_id,
                 "Failed to evaluate a request: {} (Context: {:#?})",
                 failure, ctx
             );
@@ -230,7 +227,6 @@ async fn handle_http_request(
         Err(failure) => {
             let mut resp = Response::new(empty_body());
             warn!(
-                trace_id = %ctx.trace_id,
                 "Failed to evaluate a request: {} (Context: {:#?})",
                 failure, ctx
             );
@@ -243,9 +239,7 @@ async fn handle_http_request(
         // FIXME: render the deny template if there's one.
         crate::acl::Action::Deny(_explain_template) => {
             info!(
-                trace_id = %ctx.trace_id,
-                client_address = %ctx.client_address,
-                host = target_authority.host(),
+                duration_us = start.elapsed().as_micros(),
                 "Request denied by ACL",
             );
             let mut resp = Response::new(empty_body());
@@ -254,10 +248,9 @@ async fn handle_http_request(
         }
         crate::acl::Action::Redirect(target) => {
             info!(
-                trace_id = %ctx.trace_id,
-                client_address = %ctx.client_address,
                 original_host = %target_authority.host(),
                 redirected_to = %target,
+                duration_us = start.elapsed().as_micros(),
                 "Request redirected by ACL",
             );
             final_address = target.to_string();
@@ -267,16 +260,14 @@ async fn handle_http_request(
     }
 
     info!(
-        trace_id = %ctx.trace_id,
-        client_address = %ctx.client_address,
-        host = %target_authority.host(),
+        duration_us = start.elapsed().as_micros(),
         "Request allowed by ACL",
     );
 
     let mut stream: Option<OutboundStream> = None;
+    let start = Instant::now();
     for backend in backends {
         debug!(
-            trace_id = %ctx.trace_id,
             address = %final_address,
             backend = ?backend,
             "Backend selected for HTTP CONNECT"
@@ -291,9 +282,9 @@ async fn handle_http_request(
         {
             Ok(upstream) => {
                 debug!(
-                    trace_id = %ctx.trace_id,
                     address = %final_address,
                     backend = ?backend,
+                    duration_ms = start.elapsed().as_millis(),
                     "Stream established to upstream backend"
                 );
 
@@ -302,8 +293,8 @@ async fn handle_http_request(
             }
             Err(err) => {
                 debug!(
-                    trace_id = %ctx.trace_id,
                     backend = ?backend,
+                    duration_ms = start.elapsed().as_millis(),
                     "Backend failed for HTTP CONNECT: {}, trying next",
                     err
                 );
@@ -312,22 +303,23 @@ async fn handle_http_request(
     }
     if stream.is_none() {
         debug!(
-            trace_id = %ctx.trace_id,
             address = %final_address,
+            duration_ms = start.elapsed().as_millis(),
             "No backend, establishing a direct connection to the target"
         );
+        let start = Instant::now();
         match TcpStream::connect(&final_address).await {
             Ok(socket) => {
                 debug!(
-                    trace_id = %ctx.trace_id,
                     address = %final_address,
+                    duration_ms = start.elapsed().as_millis(),
                     "Stream directly established to final address (local exit)"
                 );
                 stream = Some(Box::new(socket))
             },
             Err(e) => warn!(
-                trace_id = %ctx.trace_id,
                 address = %final_address,
+                duration_ms = start.elapsed().as_millis(),
                 "Direct connection failed: {}",
                 e),
         }
@@ -341,17 +333,19 @@ async fn handle_http_request(
 
     tokio::task::spawn(async move {
         let ctx = initial_ctx;
+        let start = Instant::now();
         match hyper::upgrade::on(req).await {
             Ok(upgraded) => {
                 let mut client = TokioIo::new(upgraded);
                 match tokio::io::copy_bidirectional(&mut client, &mut *stream).await {
-                    Err(e) => error!(trace_id = %ctx.trace_id, client_address = %ctx.client_address, "CONNECT tunnel error: {}", e),
+                    Err(e) => error!(trace_id = %ctx.trace_id, client_address = %ctx.client_address, duration_ms = start.elapsed().as_millis(), "CONNECT tunnel error: {}", e),
                     Ok((n_bytes_sent, n_bytes_recv)) => {
                         info!(
                             trace_id = %ctx.trace_id,
                             client_address = %ctx.client_address,
                             n_bytes_sent = %n_bytes_sent,
                             n_bytes_recv = %n_bytes_recv,
+                            duration_ms = start.elapsed().as_millis(),
                             "CONNECT tunnel finished successfully"
                         );
                     }
