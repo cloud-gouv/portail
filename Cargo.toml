@@ -32,9 +32,9 @@ zlink = "^0.5"
 rustls-pki-types = "^1"
 
 [dev-dependencies]
-criterion = { version = "0.8.2", features = ["html_reports"] }
-insta = "1.47.2"
-rand = "0.10.1"
+criterion = { version = "=0.8.2", features = ["html_reports"] }
+insta = "=1.47.2"
+rand = "=0.10.1"
 
 [[bench]]
 name = "acl"
