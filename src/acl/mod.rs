@@ -18,6 +18,17 @@ pub struct ACLRules {
     pub hir: ACLHir,
 }
 
+impl Default for ACLRules {
+    fn default() -> Self {
+        Self {
+            hir: ACLHir {
+                routes: Vec::new(),
+                policies: Vec::new(),
+            },
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum LoadError {
     #[error("While reading the ACL rules: {0}")]
