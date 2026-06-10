@@ -30,6 +30,7 @@ tracing-subscriber = { version = "^0.3", features = ["env-filter", "json"] }
 winnow = "^1"
 zlink = "^0.5"
 rustls-pki-types = "^1"
+uuid = { version = "1.23.3", features = ["v4"] }
 
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }
