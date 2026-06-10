@@ -76,28 +76,27 @@ pub async fn route_to_backend<S: AsyncRead + Unpin + AsyncWrite>(
     Ok(())
 }
 
+#[tracing::instrument(skip(opts, state, socket), fields(trace_id = %ctx.trace_id, client_address = %ctx.client_address))]
 pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
     opts: Arc<Settings>,
     state: Arc<RwLock<State>>,
     ctx: OwnedRequestContext,
     socket: S,
 ) -> Result<(), SocksError> {
-    let mut ctx = ctx.as_local();
     let should_resolve_dns: bool = state.read().await.default_backend.is_none();
-
-    debug!("{}: Serving SOCKS5 proxy (should resolve DNS? {})", ctx.client_address, should_resolve_dns);
 
     let (proto, cmd, target_addr) = Socks5ServerProtocol::accept_no_auth(socket)
         .await?
         .read_command()
         .await?;
 
-    ctx.acl_ctx.insert(
-        "proxy.protocol",
-        crate::acl::ast::ConcreteOperand::String("socks5"),
+    debug!(
+        trace_id = %ctx.trace_id,
+        client_address = %ctx.client_address,
+        target_addr = %target_addr,
+        "SOCKS5 target address obtained"
     );
 
-    debug!("{}: SOCKS5 target address is '{}'", ctx.client_address, target_addr);
     let mut target_context = TargetContext {
         initial_target: target_addr.clone().into(),
         resolved_target: None,
@@ -109,9 +108,20 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
         target_addr
     };
 
-    debug!("{}: SOCKS5 resolved target address is '{}'", ctx.client_address, target_addr);
+    debug!(
+        trace_id = %ctx.trace_id,
+        client_address = %ctx.client_address,
+        target_addr = %target_addr,
+        "SOCKS5 resolved target address obtained"
+    );
+
     let (host, port) = target_context.initial_target.clone().into_string_and_port();
 
+    let mut ctx = ctx.as_local();
+    ctx.acl_ctx.insert(
+        "proxy.protocol",
+        crate::acl::ast::ConcreteOperand::String("socks5"),
+    );
     ctx.acl_ctx
         .insert("host", crate::acl::ast::ConcreteOperand::String(&host));
     ctx.acl_ctx.insert(
@@ -128,13 +138,17 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
     };
 
     if cmd != Socks5Command::TCPConnect && cmd != Socks5Command::UDPAssociate {
-        debug!("{}: Unsupported SOCKS5 command received, terminating connection", ctx.client_address);
+        info!(
+            trace_id = %ctx.trace_id,
+            client_address = %ctx.client_address,
+            command = ?cmd,
+            "Unsupported SOCKS5 command received, terminating connection"
+        );
         proto.reply_error(&ReplyError::CommandNotSupported).await?;
         return Err(ReplyError::CommandNotSupported.into());
     }
 
     if cmd == Socks5Command::TCPConnect {
-        debug!("{}: SOCKS5 command is TCP CONNECT", ctx.client_address);
         ctx.acl_ctx.insert(
             "proxy.cmd",
             crate::acl::ast::ConcreteOperand::String("tcp_connect"),
@@ -142,12 +156,18 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
     }
 
     if cmd == Socks5Command::UDPAssociate {
-        debug!("{}: SOCKS5 command is UDP ASSOCIATE", ctx.client_address);
         ctx.acl_ctx.insert(
             "proxy.cmd",
             crate::acl::ast::ConcreteOperand::String("udp_associate"),
         );
     }
+
+    debug!(
+        trace_id = %ctx.trace_id,
+        client_address = %ctx.client_address,
+        command = ?cmd,
+        "SOCKS5 command allowed"
+    );
 
     let mut backends: Vec<&BackendSettings> = Vec::with_capacity(1);
     let acl = &state.read().await.acl_rules;
@@ -158,6 +178,8 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
         Err(failure) => {
             proto.reply_error(&ReplyError::GeneralFailure).await?;
             warn!(
+                trace_id = %ctx.trace_id,
+                client_address = %ctx.client_address,
                 "Failed to evaluate routes for a request: {} (Context: {:#?})",
                 failure, ctx
             );
@@ -199,6 +221,8 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
         Err(failure) => {
             proto.reply_error(&ReplyError::GeneralFailure).await?;
             warn!(
+                trace_id = %ctx.trace_id,
+                client_address = %ctx.client_address,
                 "Failed to evaluate a request: {} (Context: {:#?})",
                 failure, ctx
             );
@@ -209,15 +233,22 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
     match assessment.action {
         // FIXME: render the deny template if there's one.
         crate::acl::Action::Deny(_explain_template) => {
-            info!("{}: SOCKS5: Request to {} is blocked", ctx.client_address, &target_context.initial_target);
+            info!(
+                trace_id = %ctx.trace_id,
+                client_address = %ctx.client_address,
+                target_context = ?target_context,
+                "SOCKS5 request blocked due to ACL"
+            );
             proto.reply_error(&ReplyError::ConnectionNotAllowed).await?;
             return Ok(());
         }
         crate::acl::Action::Redirect(target) => {
             info!(
-                "{}: SOCKS5: Request to {} redirected to {}",
-                ctx.client_address,
-                &target_context.initial_target, target
+                trace_id = %ctx.trace_id,
+                client_address = %ctx.client_address,
+                target_context = ?target_context,
+                redirected_to = %target,
+                "SOCKS5 request redirected due to ACL"
             );
             final_addr = TargetAddr::Domain(
                 target
@@ -236,20 +267,31 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
     // Either, we route to another backend or we do the SOCKS5 proxying ourselves.
     while let Some(backend) = backends.pop() {
         debug!(
-            "Backend {} selected for routing the connection",
-            &backend.target_address
+            trace_id = %ctx.trace_id,
+            client_address = %ctx.client_address,
+            backend = ?backend,
+            "Backend selected for connection routing"
         );
 
         match connect_to_backend(backend, &final_addr, state.clone()).await {
             Ok(stream) => {
+                debug!(
+                    trace_id = %ctx.trace_id,
+                    client_address = %ctx.client_address,
+                    backend = ?backend,
+                    "Connection to upstream backend successful"
+                );
+
                 route_to_backend(stream, proto).await?;
                 return Ok(());
             }
 
             Err(err) => {
                 debug!(
-                    "Backend {} failed to route the request: {err}, trying the next one",
-                    &backend.target_address
+                    trace_id = %ctx.trace_id,
+                    client_address = %ctx.client_address,
+                    backend = ?backend,
+                    "Backend failed to route the request: {err}, trying the next one",
                 );
                 continue;
             }
@@ -258,7 +300,7 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
 
     // If we get there, this means that we did not have any backend at all.
     {
-        debug!("No backend, terminating the connection ourself");
+        debug!(trace_id = %ctx.trace_id, client_address = %ctx.client_address, "No backend, terminating the connection ourself");
         match (cmd, opts.public_address) {
             (Socks5Command::TCPConnect, _) => {
                 fast_socks5::server::run_tcp_proxy(
