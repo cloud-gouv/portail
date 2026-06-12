@@ -38,7 +38,7 @@ fn resolve_numeric_groups_to_names(gids: Vec<Gid>) -> HashSet<String> {
                 nix::libc::getgrgid_r(
                     gid.as_raw(),
                     &mut grp,
-                    buf.as_mut_ptr() as *mut i8,
+                    buf.as_mut_ptr().cast::<nix::libc::c_char>(),
                     buf.len(),
                     &mut grp_ptr,
                 )
