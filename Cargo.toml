@@ -32,12 +32,18 @@ zlink = "^0.5"
 rustls-pki-types = "^1"
 
 [dev-dependencies]
-criterion = { version = "0.8.2", features = ["html_reports"] }
+criterion = { version = "0.8.2", features = ["html_reports", "async_tokio"] }
 insta = "1.47.2"
 rand = "0.10.1"
+rcgen = "0.14.8"
+http-body-util = "0.1"
 
 [[bench]]
 name = "acl"
+harness = false
+
+[[bench]]
+name = "tls"
 harness = false
 
 [profile.dev.package]
