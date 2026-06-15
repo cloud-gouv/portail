@@ -642,6 +642,12 @@ in
           "curl --fail --max-time 5 https://hello.corp.example.com/"
         )
 
+        # Wait until the proxy has fully established its internal tunnel.
+        node.wait_until_succeeds(
+            "curl --fail --silent --output /dev/null --max-time 5 --proxy http://127.0.0.1:8080 https://hello.corp.example.com",
+            timeout=30
+        )
+
         # Test HTTP CONNECT curl -> portail -(TLS)-> portail (hop) -> corp-server
         result = json.loads(node.succeed(
           "curl --fail --max-time 5 --proxy http://127.0.0.1:8080 https://hello.corp.example.com"
