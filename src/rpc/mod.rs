@@ -8,7 +8,7 @@ use crate::{
 };
 use std::{collections::HashSet, ffi::CStr, sync::Arc};
 use tokio::{net::UnixListener, sync::RwLock};
-use tracing::info;
+use tracing::{debug, info, warn};
 use zlink::{
     Server,
     connection::{Gid, Socket, socket::FetchPeerCredentials},
@@ -102,22 +102,27 @@ impl Control {
         groups.push(creds.unix_primary_group_id());
 
         let groups = resolve_numeric_groups_to_names(groups);
+        let authorized_groups = authorized_groups
+            .into_iter()
+            .map(|s| s.as_ref().to_owned())
+            .collect::<Vec<String>>();
+
+        // TODO: resolve numeric UIDs into usernames proper for better logs.
 
         if creds.unix_user_id().is_root()
             || authorized_groups
-                .into_iter()
-                .any(|trusted| groups.contains(trusted.as_ref()))
+                .iter()
+                .any(|trusted| groups.contains(trusted))
         {
-            info!(
-                "Privileged RPC allowed from user '{}'",
-                creds.unix_user_id()
-            );
+            info!(user = %creds.unix_user_id(), subsystem = "rpc", "Privileged RPC allowed");
             Ok(())
         } else {
-            tracing::warn!(
-                "Privileged RPC call attempt from user '{}' (groups: '{:?}') refused",
-                creds.unix_user_id(),
-                groups
+            warn!(
+                user = %creds.unix_user_id(),
+                groups = ?groups,
+                authorized_groups = ?authorized_groups,
+                subsystem = "rpc",
+                "Privileged RPC call attempt refused",
             );
 
             Err(ControlError::PermissionDenied)
@@ -136,6 +141,7 @@ impl<Sock> Control
 where
     Sock::ReadHalf: FetchPeerCredentials,
 {
+    #[tracing::instrument(skip_all, fields(subsystem = "rpc", backend_id = %backend_id))]
     async fn set_default_backend(
         &mut self,
         backend_id: Option<&str>,
@@ -148,20 +154,24 @@ where
 
         if let Some(backend_id) = backend_id {
             if !state.backends.contains_key(backend_id) {
+                info!(target_backend = %backend_id, "Backend not found in state");
                 return Err(ControlError::BackendNotFound {
                     provided_backend: backend_id.to_string(),
                     available_backends: state.backends.keys().cloned().collect(),
                 });
             }
 
+            info!(previous_backend = ?state.default_backend, new_backend = %backend_id, "Default backend changed");
             state.default_backend = Some(backend_id.to_owned());
         } else {
+            info!(previous_backend = ?state.default_backend, "Default backend unset");
             state.default_backend = None;
         }
 
         Ok(())
     }
 
+    #[tracing::instrument(skip_all, fields(subsystem = "rpc", backend_id = %backend_id, backend_spec = %backend_spec))]
     async fn update_dynamic_backend(
         &mut self,
         backend_id: &str,
@@ -176,6 +186,10 @@ where
             self.settings.backends.get(backend_id),
             Some(BackendSettings::KnownBackend(_))
         ) {
+            warn!(
+                backend_target = %backend_id,
+                "Attempt to change a non-dynamic backend, rejected"
+            );
             return Err(ControlError::ImmutableBackend);
         }
 
@@ -185,22 +199,32 @@ where
         match state.backends.get_mut(backend_id) {
             Some(backend) => {
                 info!(
-                    "Changed backend `{}` from `{:?}` to `{:?}`",
-                    backend_id, *backend, new_backend
+                    changed_backend = %backend_id,
+                    old_spec = ?*backend,
+                    new_spec = ?new_backend,
+                    "Dynamic backend specification changed"
                 );
 
                 *backend = BackendSettings::KnownBackend(new_backend);
 
                 Ok(())
             }
-            None => Err(ControlError::BackendNotFound {
-                provided_backend: backend_id.to_string(),
-                available_backends: state.backends.keys().cloned().collect(),
-            }),
+            None => {
+                info!(
+                    target_backend = %backend_id,
+                    "Backend not found"
+                );
+                Err(ControlError::BackendNotFound {
+                    provided_backend: backend_id.to_string(),
+                    available_backends: state.backends.keys().cloned().collect(),
+                })
+            }
         }
     }
 
+    #[tracing::instrument(skip_all, fields(subsystem = "rpc"))]
     async fn get_current_backend(&mut self) -> GetCurrentBackendOutput {
+        debug!("Current backend read");
         GetCurrentBackendOutput {
             backend_id: self
                 .state
@@ -212,9 +236,11 @@ where
         }
     }
 
+    #[tracing::instrument(skip_all, fields(subsystem = "rpc"))]
     async fn list_backends(&mut self) -> ListBackendsOutput {
         let cur_backend = self.state.read().await.default_backend.clone();
         let backends = &self.state.read().await.backends;
+        debug!("Backend list read");
         ListBackendsOutput {
             backends: backends
                 .iter()
