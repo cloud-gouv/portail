@@ -2,7 +2,7 @@ use anyhow::bail;
 use fast_socks5::SocksError;
 use std::sync::Arc;
 use thiserror::Error;
-use tokio::sync::RwLock;
+use tokio::{net::TcpStream, sync::RwLock};
 use tokio_rustls::{
     TlsAcceptor, TlsStream,
     rustls::{
@@ -10,7 +10,7 @@ use tokio_rustls::{
         server::{VerifierBuilderError, WebPkiClientVerifier},
     },
 };
-use tracing::error;
+use tracing::{Instrument, debug, error};
 
 use crate::{config::Settings, proxy::context::OwnedRequestContext, state::State};
 
@@ -114,6 +114,78 @@ async fn build_tls_acceptor(
     }
 }
 
+#[tracing::instrument(skip_all, fields(trace_id = %ctx.trace_id, client_address = %ctx.client_address, subsystem = "proxy_access"))]
+pub async fn accept_client(
+    settings: Arc<Settings>,
+    state: Arc<RwLock<State>>,
+    socket: TcpStream,
+    tls_acceptor: Option<TlsAcceptor>,
+    ctx: OwnedRequestContext,
+) {
+    debug!(subsystem = "proxy_access", "Accepting a proxy connection");
+
+    let acceptor = tls_acceptor.clone();
+    let settings = settings.clone();
+    let state = state.clone();
+
+    tokio::spawn(
+        async move {
+            match detect_tls(&socket).await {
+                Ok(true) => {
+                    debug!(subsystem = "proxy_access", "TLS detected");
+                    if let Some(acceptor) = acceptor {
+                        match acceptor.accept(socket).await {
+                            Ok(tls_stream) => {
+                                debug!(
+                                    subsystem = "proxy_access",
+                                    "Authenticated TLS stream (client certificates)"
+                                );
+                                if let Err(e) = serve_authenticated_proxy(
+                                    settings,
+                                    state,
+                                    ctx,
+                                    TlsStream::Server(tls_stream),
+                                )
+                                .await
+                                {
+                                    error!(subsystem = "proxy_errors", "TLS proxy error: {e:?}");
+                                }
+                            }
+                            Err(e) => {
+                                error!(subsystem = "proxy_errors", "TLS handshake failed: {e:?}");
+                            }
+                        }
+                    } else {
+                        error!(
+                            subsystem = "proxy_errors",
+                            "TLS received but no TLS configuration set in the proxy"
+                        );
+                    }
+                }
+
+                Ok(false) => {
+                    debug!(
+                        subsystem = "proxy_access",
+                        "No TLS detected, serving unauthenticated requests",
+                    );
+                    if let Err(e) = serve_unauthenticated_proxy(settings, state, ctx, socket).await
+                    {
+                        error!(subsystem = "proxy_errors", "Proxy error: {e:?}");
+                    }
+                }
+
+                Err(err) => {
+                    error!(
+                        subsystem = "proxy_errors",
+                        "While detecting the header for TLS, error occurred: {err:?}"
+                    );
+                }
+            }
+        }
+        .in_current_span(),
+    );
+}
+
 pub async fn start(
     settings: Arc<Settings>,
     state: Arc<RwLock<State>>,
@@ -123,53 +195,14 @@ pub async fn start(
 
     loop {
         let (socket, addr) = listener.accept().await?;
-
-        let acceptor = tls_acceptor.clone();
-        let settings = settings.clone();
-        let state = state.clone();
         let ctx = OwnedRequestContext::new(addr);
-
-        tokio::spawn(async move {
-            match detect_tls(&socket).await {
-                Ok(true) => {
-                    if let Some(acceptor) = acceptor {
-                        match acceptor.accept(socket).await {
-                            Ok(tls_stream) => {
-                                if let Err(e) = serve_authenticated_proxy(
-                                    settings,
-                                    state,
-                                    ctx,
-                                    TlsStream::Server(tls_stream),
-                                )
-                                .await
-                                {
-                                    error!("TLS proxy error from {addr}: {e:?}");
-                                }
-                            }
-                            Err(e) => {
-                                error!("TLS handshake failed from {addr}: {e:?}");
-                            }
-                        }
-                    } else {
-                        error!(
-                            "TLS received from {addr}: but no TLS configuration set in the proxy"
-                        );
-                    }
-                }
-
-                Ok(false) => {
-                    if let Err(e) = serve_unauthenticated_proxy(settings, state, ctx, socket).await
-                    {
-                        error!("Proxy error from {addr}: {e:?}");
-                    }
-                }
-
-                Err(err) => {
-                    error!(
-                        "While detecting the header for TLS from {addr}, error occurred: {err:?}"
-                    );
-                }
-            }
-        });
+        accept_client(
+            settings.clone(),
+            state.clone(),
+            socket,
+            tls_acceptor.clone(),
+            ctx,
+        )
+        .await;
     }
 }
