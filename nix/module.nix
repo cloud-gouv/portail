@@ -133,7 +133,7 @@ in
         # Use "notify-reload" when https://github.com/cloud-gouv/portail/issues/9 is done.
         Type = "notify";
         NotifyAccess = "main";
-        ExecStart = "${cfg.package}/bin/portail daemon --config ${configFile}";
+        ExecStart = "${cfg.package}/bin/portail daemon --log-preset systemd --config ${configFile}";
 
         # Enable when https://github.com/cloud-gouv/portail/issues/10 is done.
         # FileDescriptorStoreMax = 1000;
@@ -154,6 +154,7 @@ in
 
         RuntimeDirectory = "portail";
         StateDirectory = "portail";
+        LogsDirectory = "portail";
       };
     };
   };
