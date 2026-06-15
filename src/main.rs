@@ -115,12 +115,13 @@ async fn main() -> Result<()> {
             json,
             command,
         } => {
+            let mut connection = zlink::unix::connect(&rpc_socket).await.context(format!(
+                "Opening the RPC socket at path '{}'",
+                rpc_socket.display()
+            ))?;
+
             match command {
                 RpcCommands::PrintCurrentBackend => {
-                    let mut connection = zlink::unix::connect(&rpc_socket).await.context(
-                        format!("Opening the RPC socket at path '{}'", rpc_socket.display()),
-                    )?;
-
                     let cur_backend = connection
                             .get_current_backend()
                             .await
@@ -142,10 +143,6 @@ async fn main() -> Result<()> {
                 }
 
                 RpcCommands::SetDefaultBackend { backend_id } => {
-                    let mut connection = zlink::unix::connect(&rpc_socket).await.context(
-                        format!("Opening the RPC socket at path '{}'", rpc_socket.display()),
-                    )?;
-
                     connection
                         .set_default_backend(Some(&backend_id))
                         .await
@@ -166,10 +163,6 @@ async fn main() -> Result<()> {
                 }
 
                 RpcCommands::UnsetDefaultBackend => {
-                    let mut connection = zlink::unix::connect(&rpc_socket).await.context(
-                        format!("Opening the RPC socket at path '{}'", rpc_socket.display()),
-                    )?;
-
                     connection
                         .set_default_backend(None)
                         .await
@@ -190,9 +183,6 @@ async fn main() -> Result<()> {
                 }
 
                 RpcCommands::ListBackends => {
-                    let mut connection = zlink::unix::connect(&rpc_socket).await.context(
-                        format!("Opening the RPC socket at path '{}'", rpc_socket.display()),
-                    )?;
                     let backends = connection
                         .list_backends()
                         .await
