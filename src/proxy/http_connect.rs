@@ -21,6 +21,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
+use tokio::time::timeout;
 use tracing::{debug, error, info, warn};
 
 /// This is a workaround for the restriction `only auto traits can be used as additional traits in a trait object`
@@ -104,7 +105,7 @@ pub async fn serve_http2_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
 async fn handle_http_request(
     req: Request<Incoming>,
     ctx: InitialRequestContext,
-    _settings: Arc<Settings>,
+    settings: Arc<Settings>,
     state: Arc<RwLock<State>>,
     inbound_protocol: InboundHttpProtocol,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
@@ -270,22 +271,31 @@ async fn handle_http_request(
                     "Backend {} selected for HTTP CONNECT to {}",
                     backend.target_address, final_address
                 );
-                match connect_to_http_proxy_backend(
-                    &backend,
-                    &final_address,
-                    state.clone(),
-                    &inbound_protocol,
+                match timeout(
+                    settings.request_timeout,
+                    connect_to_http_proxy_backend(
+                        &backend,
+                        &final_address,
+                        state.clone(),
+                        &inbound_protocol,
+                    ),
                 )
                 .await
                 {
-                    Ok(upstream) => {
+                    Ok(Ok(upstream)) => {
                         stream = Some(upstream);
                         break;
                     }
-                    Err(err) => {
+                    Ok(Err(err)) => {
                         debug!(
                             "Backend {} failed for HTTP CONNECT: {}, trying next",
                             backend.target_address, err
+                        );
+                    }
+                    Err(_) => {
+                        debug!(
+                            "Backend {} timed out for HTTP CONNECT after {:?}, trying next",
+                            backend.target_address, settings.request_timeout
                         );
                     }
                 }
@@ -297,9 +307,13 @@ async fn handle_http_request(
             "No backend, establishing a direct connection to `{}`",
             final_address
         );
-        match TcpStream::connect(&final_address).await {
-            Ok(socket) => stream = Some(Box::new(socket)),
-            Err(e) => warn!("Direct connection to `{}` failed: {}", final_address, e),
+        match timeout(settings.request_timeout, TcpStream::connect(&final_address)).await {
+            Ok(Ok(socket)) => stream = Some(Box::new(socket)),
+            Ok(Err(e)) => warn!("Direct connection to `{}` failed: {}", final_address, e),
+            Err(_) => warn!(
+                "Direct connection to `{}` timed out after {:?}",
+                final_address, settings.request_timeout
+            ),
         }
     }
 
