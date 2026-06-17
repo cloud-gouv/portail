@@ -655,6 +655,72 @@ in
       '';
     };
 
+  # HTTP CONNECT outbound setup should stop after request-timeout. Packets to the
+  # target are dropped so TCP connect hangs until portail gives up.
+  http-connect-timeout =
+    let
+      requestTimeout = 2;
+    in
+    pkgs.testers.nixosTest {
+      name = "http-connect-timeout";
+      nodes = {
+        corp-server = mkServiceNode { };
+
+        node = { nodes, ... }: {
+          imports = [ ../module.nix portailEnv ];
+
+          networking.interfaces.eth1.ipv4.addresses = [
+            {
+              address = "192.168.1.100";
+              prefixLength = 24;
+            }
+          ];
+
+          networking.hosts."${nodes.corp-server.networking.primaryIPAddress}" =
+            [ "hello.corp.example.com" "bad.corp.example.com" ];
+
+          networking.firewall.extraCommands = ''
+            iptables -I OUTPUT -p tcp -d ${nodes.corp-server.networking.primaryIPAddress} -j DROP
+          '';
+
+          services.portail = {
+            enable = true;
+            enableAtBoot = true;
+            settings.request-timeout = requestTimeout;
+            acl.filter.rules = [
+              ''
+                policy hello {
+                  when host =~ "hello.corp.example.com"
+                  action allow
+                }
+              ''
+            ];
+          };
+        };
+      };
+
+      testScript = ''
+        import time
+
+        start_all()
+
+        node.wait_for_unit("multi-user.target")
+        node.wait_for_unit("portail.service")
+        node.wait_for_open_port(8080)
+
+        started = time.time()
+        # Run inside sh -c in order to avoid RequestedAssertionFailed (exit code 28)
+        output = node.succeed(
+          "sh -c 'curl -sS --max-time 10 --proxytunnel --proxy http://127.0.0.1:8080 http://hello.corp.example.com/ 2>&1; true'"
+        )
+        elapsed = time.time() - started
+
+        assert elapsed < ${toString requestTimeout} + 3, (
+          f"curl call took {elapsed:.2f}s while portail request-timeout is set to ${toString requestTimeout}s (curl output: {output!r})"
+        )
+      '';
+    };
+
   portail-backend-dynamic-switching = pkgs.testers.nixosTest {
     name = "portail-multiple-backends";
     nodes = {
