@@ -1,7 +1,7 @@
 { config, lib, pkgs, ... }:
 
 let
-  inherit (lib) mkEnableOption mkPackageOption mkOption types mkDefault concatStringsSep mkIf;
+  inherit (lib) mkEnableOption mkPackageOption mkOption types mkDefault concatStringsSep mkIf sort lessThan attrNames;
   cfg = config.services.portail;
 
   toml = pkgs.formats.toml { };
@@ -14,7 +14,12 @@ let
   in
   pkgs.writeTextFile {
     name = "portail-acl";
-    text = concatStringsSep "\n" cfg.acl.filter.rules;
+    text = 
+    let
+      sortedKeys = sort lessThan (attrNames cfg.acl.filter.rules);
+      sortedRules = map (key: cfg.acl.filter.rules.${key}) sortedKeys;
+    in
+    concatStringsSep "\n" sortedRules;
     checkPhase = ''
       echo checking ACL syntax...
       ${cfg.package}/bin/portail check-acl-syntax --config ${partialConfigFile} "$target"
@@ -45,11 +50,26 @@ in
       '';
 
       acl.filter.rules = mkOption {
-        type = types.listOf types.str;
-        default = [ ".* -> deny" ];
+        type = types.attrsOf types.str;
+        default = {
+          "99-default-deny" = ''
+            policy default_deny {
+              action deny
+            }
+          '';
+        };
+        example = {
+          "99-default-allow" = ''
+            policy default_allow {
+              action allow
+            }
+          '';
+        };
         description = ''
-          List of ACL filter rules.
-          By default, it denies all requests.
+          Attribute set of ACL filter rules.
+
+          Keys are used to sort the blocks of policies according to the lexicographical order.
+          This allows for easy extensibility and prioritization based on the attribute name keys lexicographical order.
         '';
       };
 

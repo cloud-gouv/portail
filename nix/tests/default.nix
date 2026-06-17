@@ -68,14 +68,13 @@ let
       enable = true;
       enableAtBoot = true;
       proxyListenStream = "0.0.0.0:8080";
-      acl.filter.rules = [
+      acl.filter.rules.default =
         ''
           policy hello {
             when host =~ "${allowedHostsRegex}"
             action allow
           }
-        ''
-      ];
+        '';
     };
   };
 
@@ -166,15 +165,14 @@ in
             # NOTE: we already possess part of the chain in the local trust store.
             tls-chain = certs.proxyCerts.${portailDomain}.cert;
           };
-          acl.filter.rules = [
+          acl.filter.rules.default =
             # DNS resolution takes place now here.
             ''
               policy hello {
                 when host =~ "192.168.1.1|hello.corp.example.com"
                 action allow
               }
-            ''
-          ];
+            '';
         };
       };
     };
@@ -330,14 +328,13 @@ in
               target-address = "192.168.1.50:8080";
             };
           };
-          acl.filter.rules = [
+          acl.filter.rules.default =
             ''
               policy hello {
                 when host =~ "hello.corp.example.com|192.168.1.1" and port == 80
                 action allow
               }
-            ''
-          ];
+            '';
         };
       };
     };
@@ -421,14 +418,13 @@ in
                 target-address = "${upstreamIp}:8080";
               };
             };
-            acl.filter.rules = [
+            acl.filter.rules.default =
               ''
                 policy hello {
                   when host =~ "hello.corp.example.com|192.168.1.1" and (port == 80 or port == 443)
                   action allow
                 }
-              ''
-            ];
+              '';
           };
         };
       };
@@ -514,14 +510,13 @@ in
             };
           };
 
-          acl.filter.rules = [
+          acl.filter.rules.default =
             ''
               policy hello {
                 when host == "hello.corp.example.com"
                 action allow
               }
-            ''
-          ];
+            '';
         };
       };
     };
@@ -726,14 +721,13 @@ in
             };
           };
 
-          acl.filter.rules = [
+          acl.filter.rules.default =
             ''
               policy hello {
                 when host =~ "hello.corp.example.com|192.168.1.1" and port == 80
                 action allow
               }
-            ''
-          ];
+            '';
         };
       };
     };
