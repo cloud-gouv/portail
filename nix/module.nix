@@ -116,7 +116,7 @@ in
         socketConfig = {
           Service = "portail.service";
           Accept = "no";
-          ListenStream = "/run/portail/fr.gouv.portail.Control";
+          ListenStream = "/run/fr.gouv.portail.Control";
           PassCredentials = true;
           FileDescriptorName = "control";
         };
