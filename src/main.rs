@@ -33,7 +33,7 @@ fn get_default_config_path() -> PathBuf {
 }
 
 fn get_default_socket_path() -> PathBuf {
-    "/run/portail/fr.gouv.portail.Control".into()
+    "/run/fr.gouv.portail.Control".into()
 }
 
 #[derive(Subcommand)]
