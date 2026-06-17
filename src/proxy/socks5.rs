@@ -11,6 +11,7 @@ use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpStream,
     sync::RwLock,
+    time::timeout,
 };
 use tokio_rustls::TlsStream;
 use tracing::{debug, info, warn};
@@ -246,16 +247,29 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
                     &backend.target_address
                 );
 
-                match connect_to_backend(&backend, &final_addr, state.clone()).await {
-                    Ok(stream) => {
+                match timeout(
+                    opts.request_timeout,
+                    connect_to_backend(&backend, &final_addr, state.clone()),
+                )
+                .await
+                {
+                    Ok(Ok(stream)) => {
                         route_to_backend(stream, proto).await?;
                         return Ok(());
                     }
 
-                    Err(err) => {
+                    Ok(Err(err)) => {
                         debug!(
                             "Backend {} failed to route the request: {err}, trying the next one",
                             &backend.target_address
+                        );
+                        continue;
+                    }
+
+                    Err(_) => {
+                        debug!(
+                            "Backend {} timed out after {:?}, trying the next one",
+                            &backend.target_address, opts.request_timeout
                         );
                         continue;
                     }
