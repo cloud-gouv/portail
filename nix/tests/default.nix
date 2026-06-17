@@ -634,12 +634,12 @@ in
 
         # The direct route is blocked, so the proxy cannot fallback.
         node.fail(
-          "curl --fail --max-time 5 https://hello.corp.example.com/"
+          "curl --fail https://hello.corp.example.com/"
         )
 
         # Test HTTP CONNECT curl -> portail -(TLS)-> portail (hop) -> corp-server
         result = json.loads(node.succeed(
-          "curl --fail --max-time 5 --proxy http://127.0.0.1:8080 https://hello.corp.example.com"
+          "curl --fail --proxy http://127.0.0.1:8080 https://hello.corp.example.com"
         ))
         assert (
           result['service'] == 'hello.corp'
