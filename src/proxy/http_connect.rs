@@ -18,7 +18,7 @@ use hyper::{
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use std::io;
 use std::sync::Arc;
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
 use tokio::time::timeout;
@@ -329,6 +329,13 @@ async fn handle_http_request(
                 let mut client = TokioIo::new(upgraded);
                 if let Err(e) = tokio::io::copy_bidirectional(&mut client, &mut *stream).await {
                     error!("CONNECT tunnel error: {}", e);
+                }
+
+                // Send close_notify on TLS streams
+                // Send TCP FIN otherwise
+                // See https://github.com/rustls/tokio-rustls/blob/182345793062971bec711c2d773e75a08767eeeb/src/client.rs#L459
+                if let Err(e) = stream.shutdown().await {
+                    debug!("CONNECT upstream shutdown error: {}", e);
                 }
             }
             Err(e) => debug!("CONNECT upgrade error: {}", e),
