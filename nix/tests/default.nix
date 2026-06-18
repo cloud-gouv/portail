@@ -68,14 +68,13 @@ let
       enable = true;
       enableAtBoot = true;
       proxyListenStream = "0.0.0.0:8080";
-      acl.filter.rules = [
+      acl.filter.rules.default =
         ''
           policy hello {
             when host =~ "${allowedHostsRegex}"
             action allow
           }
-        ''
-      ];
+        '';
     };
   };
 
@@ -166,15 +165,14 @@ in
             # NOTE: we already possess part of the chain in the local trust store.
             tls-chain = certs.proxyCerts.${portailDomain}.cert;
           };
-          acl.filter.rules = [
+          acl.filter.rules.default =
             # DNS resolution takes place now here.
             ''
               policy hello {
                 when host =~ "192.168.1.1|hello.corp.example.com"
                 action allow
               }
-            ''
-          ];
+            '';
         };
       };
     };
@@ -330,14 +328,13 @@ in
               target-address = "192.168.1.50:8080";
             };
           };
-          acl.filter.rules = [
+          acl.filter.rules.default =
             ''
               policy hello {
                 when host =~ "hello.corp.example.com|192.168.1.1" and port == 80
                 action allow
               }
-            ''
-          ];
+            '';
         };
       };
     };
@@ -421,14 +418,13 @@ in
                 target-address = "${upstreamIp}:8080";
               };
             };
-            acl.filter.rules = [
+            acl.filter.rules.default =
               ''
                 policy hello {
                   when host =~ "hello.corp.example.com|192.168.1.1" and (port == 80 or port == 443)
                   action allow
                 }
-              ''
-            ];
+              '';
           };
         };
       };
@@ -514,14 +510,13 @@ in
             };
           };
 
-          acl.filter.rules = [
+          acl.filter.rules.default =
             ''
               policy hello {
                 when host == "hello.corp.example.com"
                 action allow
               }
-            ''
-          ];
+            '';
         };
       };
     };
@@ -639,12 +634,12 @@ in
 
         # The direct route is blocked, so the proxy cannot fallback.
         node.fail(
-          "curl --fail --max-time 5 https://hello.corp.example.com/"
+          "curl --fail https://hello.corp.example.com/"
         )
 
         # Test HTTP CONNECT curl -> portail -(TLS)-> portail (hop) -> corp-server
         result = json.loads(node.succeed(
-          "curl --fail --max-time 5 --proxy http://127.0.0.1:8080 https://hello.corp.example.com"
+          "curl --fail --proxy http://127.0.0.1:8080 https://hello.corp.example.com"
         ))
         assert (
           result['service'] == 'hello.corp'
@@ -652,6 +647,70 @@ in
           and result['tls']
           and result['protocol'] == 'HTTP/2.0'
         ), "Unexpected result from the web service: {}".format(json.dumps(result))
+      '';
+    };
+
+  # HTTP CONNECT outbound setup should stop after request-timeout. Packets to the
+  # target are dropped so TCP connect hangs until portail gives up.
+  http-connect-timeout =
+    let
+      requestTimeout = 2;
+    in
+    pkgs.testers.nixosTest {
+      name = "http-connect-timeout";
+      nodes = {
+        corp-server = mkServiceNode { };
+
+        node = { nodes, ... }: {
+          imports = [ ../module.nix portailEnv ];
+
+          networking.interfaces.eth1.ipv4.addresses = [
+            {
+              address = "192.168.1.100";
+              prefixLength = 24;
+            }
+          ];
+
+          networking.hosts."${nodes.corp-server.networking.primaryIPAddress}" =
+            [ "hello.corp.example.com" "bad.corp.example.com" ];
+
+          networking.firewall.extraCommands = ''
+            iptables -I OUTPUT -p tcp -d ${nodes.corp-server.networking.primaryIPAddress} -j DROP
+          '';
+
+          services.portail = {
+            enable = true;
+            enableAtBoot = true;
+            settings.request-timeout = requestTimeout;
+            acl.filter.rules.default =
+              ''
+                policy hello {
+                  when host =~ "hello.corp.example.com"
+                  action allow
+                }
+              '';
+          };
+        };
+      };
+
+      testScript = ''
+        import time
+
+        start_all()
+
+        node.wait_for_unit("multi-user.target")
+        node.wait_for_unit("portail.service")
+        node.wait_for_open_port(8080)
+
+        started = time.time()
+        output = node.fail(
+          "curl -sS --max-time 10 --proxytunnel --proxy http://127.0.0.1:8080 http://hello.corp.example.com/ 2>&1"
+        )
+        elapsed = time.time() - started
+
+        assert elapsed < ${toString requestTimeout} + 3, (
+          f"curl call took {elapsed:.2f}s while portail request-timeout is set to ${toString requestTimeout}s (curl output: {output!r})"
+        )
       '';
     };
 
@@ -684,6 +743,11 @@ in
 
         users.groups.portailers = {};
         users.groups.heloise = {};
+        users.groups.portail-admins = {};
+        users.users.portail-admin = {
+          isNormalUser = true;
+          extraGroups = [ "portail-admins" ];
+        };
         users.users.alice = {
           isNormalUser = true;
           # supplementary group, not main group.
@@ -704,7 +768,10 @@ in
 
           settings = {
             default-backend = "alpha";
-            rpc.trusted-groups = [ "heloise" "portailers" ];
+            rpc = {
+              admin-groups = [ "portail-admins" ];
+              trusted-groups = [ "heloise" "portailers" ];
+            };
             backends = {
               alpha = {
                 target-address =
@@ -712,17 +779,19 @@ in
               };
 
               beta.target-address = "${nodes.microsocks-beta.networking.primaryIPAddress}:8080";
+
+              # Target address is not known in advance.
+              gamma.dynamic = true;
             };
           };
 
-          acl.filter.rules = [
+          acl.filter.rules.default =
             ''
               policy hello {
                 when host =~ "hello.corp.example.com|192.168.1.1" and port == 80
                 action allow
               }
-            ''
-          ];
+            '';
         };
       };
     };
@@ -767,6 +836,11 @@ in
           else:
             raise e
 
+      def read_backend(backend_id: str) -> dict[str, str]:
+        backends = rpc("list-backends")
+        backend = [b for b in backends if b.get('id') == backend_id][0]
+        return backend.get("spec")
+
       # Verify that RPC permissions are set correctly.
       # Everyone can read, including the attacker.
       # Only trusted groups can change backends.
@@ -793,7 +867,14 @@ in
       backends = rpc("list-backends")
       assert any(b.get('current', False) for b in backends), "Expected at least one backend to be active"
       assert [b for b in backends if b.get('current', False)][0].get('id') == "alpha", "Expected active backend to be alpha"
-      assert len(backends) == 2, "Expected two backends (alpha and beta)"
+      assert len(backends) == 3, "Expected two backends (alpha, beta and gamma)"
+
+      # Dynamic backend RPC tests.
+      for user in ("alice", "heloise", "attacker"):
+        assert rpc("update-dynamic-backend", "gamma", "--target-address", "10.0.0.1:443", user=user, fail=True) is None, "Unexpectedly was able to update the dynamic backend gamma even though we are not an admin user"
+
+      assert rpc("update-dynamic-backend", "gamma", "--target-address", "10.0.0.1:443", user="portail-admin").get("success", False), "Unable to update the dynamic backend as portail-admin"
+      assert read_backend("gamma")["target_address"] == "10.0.0.1:443", "Target address change after dynamic update was not effective"
 
       # Test SOCKS5 curl -> portail -> portail alpha -> corp-server
       result = json.loads(node.succeed(

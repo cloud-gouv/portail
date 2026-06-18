@@ -161,8 +161,9 @@ impl<'s> EvaluationContext<'s> {
     /// failover.
     pub fn evaluate_routes(
         &self,
+        backends: &HashMap<String, BackendSettings>,
         rules: &'s hir::ACLHir,
-    ) -> Result<Vec<&'s BackendSettings>, InterpretationError<'s>> {
+    ) -> Result<Vec<BackendSettings>, InterpretationError<'s>> {
         let mut routes = Vec::new();
         // At this point, we can assume that the set of rules are parsed and validated.
         // So we can assume each policy block contain the relevant amount of information and we
@@ -181,7 +182,12 @@ impl<'s> EvaluationContext<'s> {
             // We fulfill when, let's look at the recommended routes.
             routes.reserve(entry.r#use.len());
             for reco in &entry.r#use {
-                routes.push(reco);
+                routes.push(
+                    backends
+                        .get(reco)
+                        .expect("Invariant violation: backend {} has disappeared from the state")
+                        .to_owned(),
+                );
             }
         }
 
@@ -248,9 +254,11 @@ impl<'s> EvaluationContext<'s> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use crate::{
         acl::{Action, OwnedEvaluationContext},
-        config::BackendSettings,
+        config::{BackendSettings, KnownBackend},
     };
 
     #[cfg(test)]
@@ -498,33 +506,38 @@ mod tests {
 
         let backend1 = {
             let target_address = "1.1.1.1:443".parse().unwrap();
-            BackendSettings {
+            BackendSettings::KnownBackend(KnownBackend {
                 target_address,
                 identity_aware: false,
                 tls_server_name: crate::config::ServerName::from(target_address.ip()),
-            }
+            })
         };
         let backend2 = {
             let target_address = "1.1.1.2:443".parse().unwrap();
-            BackendSettings {
+            BackendSettings::KnownBackend(KnownBackend {
                 target_address,
                 identity_aware: false,
                 tls_server_name: crate::config::ServerName::from(target_address.ip()),
-            }
+            })
         };
 
         let hir = ACLHir {
             routes: vec![RouteDefinition {
                 when: None,
                 name: "route_to_cf".to_string(),
-                r#use: vec![backend1, backend2],
+                r#use: vec!["backend1".to_string(), "backend2".to_string()],
             }],
             policies: vec![],
         };
 
+        let specs = HashMap::from([
+            ("backend1".to_string(), backend1),
+            ("backend2".to_string(), backend2),
+        ]);
+
         let ctx = OwnedEvaluationContext::empty();
         let ctx = ctx.fork();
-        let routes = ctx.evaluate_routes(&hir).unwrap();
+        let routes = ctx.evaluate_routes(&specs, &hir).unwrap();
         assert_eq!(routes.len(), 2);
     }
 }

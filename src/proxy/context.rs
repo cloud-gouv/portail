@@ -49,13 +49,15 @@ impl From<fast_socks5::util::target_addr::TargetAddr> for TargetAddr {
     }
 }
 
+#[derive(Debug)]
 pub struct TargetContext {
     pub initial_target: TargetAddr,
     pub resolved_target: Option<TargetAddr>,
 }
 
 #[derive(Debug, Clone)]
-pub struct InitialRequestContext {
+pub struct OwnedRequestContext {
+    pub trace_id: uuid::Uuid,
     pub client_address: SocketAddr,
     pub acl_ctx: crate::acl::OwnedEvaluationContext,
 }
@@ -64,13 +66,16 @@ pub struct InitialRequestContext {
 pub struct LocalRequestContext<'s> {
     #[allow(dead_code)]
     pub client_address: &'s SocketAddr,
+    #[allow(dead_code)]
+    pub trace_id: uuid::Uuid,
     pub acl_ctx: crate::acl::EvaluationContext<'s>,
 }
 
-impl InitialRequestContext {
+impl OwnedRequestContext {
     pub fn new(client_address: SocketAddr) -> Self {
         Self {
             client_address,
+            trace_id: uuid::Uuid::new_v4(),
             acl_ctx: crate::acl::OwnedEvaluationContext::empty(),
         }
     }
@@ -79,6 +84,7 @@ impl InitialRequestContext {
         LocalRequestContext {
             client_address: &self.client_address,
             acl_ctx: self.acl_ctx.fork(),
+            trace_id: self.trace_id,
         }
     }
 }

@@ -11,7 +11,8 @@ use crate::config::BackendSettings;
 pub struct RouteDefinition {
     pub name: String,
     pub when: Option<ast::Expression>,
-    pub r#use: Vec<BackendSettings>,
+    /// List of backend IDs
+    pub r#use: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -49,7 +50,7 @@ fn route_to_hir(
     available_backends: &HashMap<String, BackendSettings>,
 ) -> Result<RouteDefinition, TransformationError> {
     let mut when: Option<ast::Expression> = None;
-    let mut r#use: Vec<BackendSettings> = Vec::new();
+    let mut r#use: Vec<String> = Vec::new();
     let mut missing_backends: Vec<&str> = Vec::new();
 
     for attribute in route.attributes {
@@ -72,8 +73,8 @@ fn route_to_hir(
             }
 
             for backend_key in backends {
-                if let Some(backend) = available_backends.get(backend_key) {
-                    r#use.push(backend.to_owned());
+                if available_backends.contains_key(backend_key) {
+                    r#use.push(backend_key.to_owned());
                 } else {
                     missing_backends.push(backend_key);
                 }
@@ -190,8 +191,8 @@ pub fn ast_to_hir<'s>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::acl::Action;
     use crate::acl::ast;
+    use crate::config::KnownBackend;
     use crate::config::{BackendSettings, ServerName};
     use insta::assert_debug_snapshot;
     use std::collections::HashMap;
@@ -205,11 +206,11 @@ mod tests {
             let target_address = "1.1.1.1:443".parse().unwrap();
             backends.insert(
                 id.to_string(),
-                BackendSettings {
+                BackendSettings::KnownBackend(KnownBackend {
                     target_address,
                     identity_aware: false,
                     tls_server_name: ServerName::from(target_address.ip()),
-                },
+                }),
             );
         }
 

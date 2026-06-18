@@ -1,6 +1,7 @@
 //! Contains the state of the application and various state transitions APIs.
 
 use std::{
+    collections::HashMap,
     io::BufReader,
     sync::{Arc, atomic::AtomicUsize},
 };
@@ -12,7 +13,7 @@ use tokio_rustls::rustls::{
 };
 use tracing::{info, warn};
 
-use crate::config::Settings;
+use crate::config::{BackendSettings, Settings};
 use thiserror::Error;
 
 pub struct ServerCertificates<'a> {
@@ -21,6 +22,7 @@ pub struct ServerCertificates<'a> {
 }
 
 pub struct State {
+    pub backends: HashMap<String, BackendSettings>,
     pub default_backend: Option<String>,
     pub acl_rules: crate::acl::ACLRules,
     pub root_store: Option<Arc<tokio_rustls::rustls::RootCertStore>>,
@@ -161,6 +163,7 @@ pub struct Statistics {
 
 pub fn init(settings: &Settings) -> Result<State, InitError> {
     let mut state = State {
+        backends: settings.backends.clone(),
         default_backend: settings.default_backend.clone(),
         acl_rules: crate::acl::load_rules_from_file(
             &settings
