@@ -21,8 +21,8 @@ use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
-use tokio::time::timeout;
-use tracing::{debug, error, info, warn};
+use tokio::time::{Instant, timeout};
+use tracing::{Instrument, debug, error, info, warn};
 
 /// This is a workaround for the restriction `only auto traits can be used as additional traits in a trait object`
 trait OutboundStreamIo: AsyncRead + AsyncWrite {}
@@ -30,6 +30,7 @@ impl<T: AsyncRead + AsyncWrite> OutboundStreamIo for T {}
 
 type OutboundStream = Box<dyn OutboundStreamIo + Send + Unpin>;
 
+#[derive(Debug)]
 enum InboundHttpProtocol {
     Http1,
     Http2,
@@ -39,12 +40,14 @@ enum InboundHttpProtocol {
 /// - https://docs.rs/hyper/latest/hyper/upgrade/index.html
 /// - https://github.com/hyperium/hyper/blob/master/examples/http_proxy.rs
 /// - https://github.com/hyperium/hyper/blob/master/examples/upgrades.rs
+#[tracing::instrument(skip_all, fields(trace_id = %ctx.trace_id, client_address = %ctx.client_address, subsystem = "proxy_access"))]
 pub async fn serve_http1_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     settings: Arc<Settings>,
     state: Arc<RwLock<State>>,
     ctx: OwnedRequestContext,
     stream: S,
 ) -> Result<(), ProxyError> {
+    debug!(subsystem = "proxy_access", "HTTP/1.1 CONNECT request");
     let io = TokioIo::new(stream);
 
     // TODO: update ctx
@@ -69,12 +72,14 @@ pub async fn serve_http1_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
     Ok(())
 }
 
+#[tracing::instrument(skip_all, fields(trace_id = %ctx.trace_id, client_address = %ctx.client_address, subsystem = "proxy_access"))]
 pub async fn serve_http2_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     settings: Arc<Settings>,
     state: Arc<RwLock<State>>,
     ctx: OwnedRequestContext,
     stream: S,
 ) -> Result<(), ProxyError> {
+    debug!(subsystem = "proxy_access", "HTTP/2 CONNECT request");
     let io = TokioIo::new(stream);
 
     // TODO: update ctx
@@ -102,6 +107,7 @@ pub async fn serve_http2_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
     Ok(())
 }
 
+#[tracing::instrument(skip_all, fields(inbound_protocol, uri = %req.uri(), method = %req.method(), trace_id = %initial_ctx.trace_id, client_address = %initial_ctx.client_address, subsystem = "proxy_access"))]
 async fn handle_http_request(
     req: Request<Incoming>,
     initial_ctx: OwnedRequestContext,
@@ -110,11 +116,12 @@ async fn handle_http_request(
     inbound_protocol: InboundHttpProtocol,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
     let mut ctx = initial_ctx.as_local();
+    let start = Instant::now();
 
     if req.method() != Method::CONNECT {
         debug!(
-            "Unsupported HTTP method `{}` received, terminating connection",
-            req.method()
+            subsystem = "proxy_errors",
+            "Unsupported HTTP method received, terminating connection",
         );
         // TODO: we might want to handle this case in the future
         let mut resp = Response::new(empty_body());
@@ -128,7 +135,10 @@ async fn handle_http_request(
     );
 
     let Some(target_authority) = req.uri().authority() else {
-        debug!("Invalid authority in CONNECT URI, terminating connection");
+        debug!(
+            subsystem = "proxy_errors",
+            "Invalid authority in CONNECT URI, terminating connection"
+        );
         let mut resp = Response::new(empty_body());
         *resp.status_mut() = StatusCode::BAD_REQUEST;
         return Ok(resp);
@@ -138,6 +148,8 @@ async fn handle_http_request(
     let mut final_address = target_address.clone();
     let mut backends: Vec<BackendSettings> = Vec::with_capacity(1);
     let backend_specs = &state.read().await.backends;
+    debug!(subsystem = "proxy_access", final_address = %final_address,
+        "HTTP CONNECT request");
     // We evaluate first whether we are allowed then we evaluate routes.
     let acl = &state.read().await.acl_rules;
 
@@ -181,8 +193,8 @@ async fn handle_http_request(
         Err(failure) => {
             let mut resp = Response::new(empty_body());
             warn!(
-                "Failed to evaluate a request: {} (Context: {:#?})",
-                failure, ctx
+                subsystem = "proxy_errors",
+                "Failed to evaluate a request: {} (Context: {:#?})", failure, ctx
             );
             *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
             return Ok(resp);
@@ -226,8 +238,8 @@ async fn handle_http_request(
         Err(failure) => {
             let mut resp = Response::new(empty_body());
             warn!(
-                "Failed to evaluate a request: {} (Context: {:#?})",
-                failure, ctx
+                subsystem = "proxy_errors",
+                "Failed to evaluate a request: {} (Context: {:#?})", failure, ctx
             );
             *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
             return Ok(resp);
@@ -237,16 +249,22 @@ async fn handle_http_request(
     match assessment.action {
         // FIXME: render the deny template if there's one.
         crate::acl::Action::Deny(_explain_template) => {
-            info!("Request to {} is blocked", target_authority.host());
+            info!(
+                subsystem = "proxy_access",
+                duration_us = start.elapsed().as_micros(),
+                "Request denied by ACL",
+            );
             let mut resp = Response::new(empty_body());
             *resp.status_mut() = StatusCode::FORBIDDEN;
             return Ok(resp);
         }
         crate::acl::Action::Redirect(target) => {
             info!(
-                "Request to {} redirected to {}",
-                target_authority.host(),
-                target
+                subsystem = "proxy_access",
+                original_host = %target_authority.host(),
+                redirected_to = %target,
+                duration_us = start.elapsed().as_micros(),
+                "Request redirected by ACL",
             );
             final_address = target.to_string();
         }
@@ -254,8 +272,21 @@ async fn handle_http_request(
         _ => {}
     }
 
+    info!(
+        subsystem = "proxy_access",
+        duration_us = start.elapsed().as_micros(),
+        "Request allowed by ACL",
+    );
+
     let mut stream: Option<OutboundStream> = None;
+    let start = Instant::now();
     for backend in backends {
+        debug!(
+            subsystem = "proxy_access",
+            address = %final_address,
+            backend = ?backend,
+            "Backend selected for HTTP CONNECT"
+        );
         match backend {
             BackendSettings::UnresolvedBackend => {
                 // TODO: keep the IDs to print them here.
@@ -267,10 +298,6 @@ async fn handle_http_request(
                 return Ok(resp);
             }
             BackendSettings::KnownBackend(backend) => {
-                debug!(
-                    "Backend {} selected for HTTP CONNECT to {}",
-                    backend.target_address, final_address
-                );
                 match timeout(
                     settings.request_timeout,
                     connect_to_http_proxy_backend(
@@ -283,19 +310,33 @@ async fn handle_http_request(
                 .await
                 {
                     Ok(Ok(upstream)) => {
+                        debug!(
+                            subsystem = "proxy_access",
+                            address = %final_address,
+                            backend = ?backend,
+                            duration_ms = start.elapsed().as_millis(),
+                            "Stream established to upstream backend"
+                        );
+
                         stream = Some(upstream);
                         break;
                     }
                     Ok(Err(err)) => {
                         debug!(
-                            "Backend {} failed for HTTP CONNECT: {}, trying next",
-                            backend.target_address, err
+                            subsystem = "proxy_access",
+                            backend = ?backend,
+                            duration_ms = start.elapsed().as_millis(),
+                            "Backend failed for HTTP CONNECT: {}, trying next",
+                            err
                         );
                     }
                     Err(_) => {
                         debug!(
-                            "Backend {} timed out for HTTP CONNECT after {:?}, trying next",
-                            backend.target_address, settings.request_timeout
+                            subsystem = "proxy_access",
+                            backend = ?backend,
+                            duration_ms = start.elapsed().as_millis(),
+                            configured_timeout_ms = settings.request_timeout.as_millis(),
+                            "Backend timed out for HTTP CONNECT, trying next",
                         );
                     }
                 }
@@ -304,36 +345,80 @@ async fn handle_http_request(
     }
     if stream.is_none() {
         debug!(
-            "No backend, establishing a direct connection to `{}`",
-            final_address
+            subsystem = "proxy_access",
+            address = %final_address,
+            duration_ms = start.elapsed().as_millis(),
+            "No backend, establishing a direct connection to the target"
         );
+
+        let start = Instant::now();
         match timeout(settings.request_timeout, TcpStream::connect(&final_address)).await {
-            Ok(Ok(socket)) => stream = Some(Box::new(socket)),
-            Ok(Err(e)) => warn!("Direct connection to `{}` failed: {}", final_address, e),
+            Ok(Ok(socket)) => {
+                debug!(
+                    subsystem = "proxy_access",
+                    address = %final_address,
+                    duration_ms = start.elapsed().as_millis(),
+                    "Stream directly established to final address (local exit)"
+                );
+                stream = Some(Box::new(socket))
+            }
+            Ok(Err(e)) => warn!(
+                subsystem = "proxy_errors",
+                address = %final_address,
+                duration_ms = start.elapsed().as_millis(),
+                "Direct connection failed: {}",
+                e),
             Err(_) => warn!(
-                "Direct connection to `{}` timed out after {:?}",
-                final_address, settings.request_timeout
+                subsystem = "proxy_errors",
+                address = %final_address,
+                duration_ms = start.elapsed().as_millis(),
+                configured_timeout_ms = settings.request_timeout.as_millis(),
+                "Direct connection failed due to timeout",
             ),
         }
     }
 
     let Some(mut stream) = stream else {
+        warn!(
+            subsystem = "proxy_errors",
+            address = %final_address,
+            "No outbound stream could be established"
+        );
+
         let mut resp = Response::new(empty_body());
         *resp.status_mut() = StatusCode::BAD_GATEWAY;
         return Ok(resp);
     };
 
-    tokio::task::spawn(async move {
-        match hyper::upgrade::on(req).await {
-            Ok(upgraded) => {
-                let mut client = TokioIo::new(upgraded);
-                if let Err(e) = tokio::io::copy_bidirectional(&mut client, &mut *stream).await {
-                    error!("CONNECT tunnel error: {}", e);
+    tokio::task::spawn(
+        async move {
+            let start = Instant::now();
+            match hyper::upgrade::on(req).await {
+                Ok(upgraded) => {
+                    let mut client = TokioIo::new(upgraded);
+                    match tokio::io::copy_bidirectional(&mut client, &mut *stream).await {
+                        Err(e) => error!(
+                            subsystem = "proxy_errors",
+                            duration_ms = start.elapsed().as_millis(),
+                            "CONNECT tunnel error: {}",
+                            e
+                        ),
+                        Ok((n_bytes_sent, n_bytes_recv)) => {
+                            info!(
+                                subsystem = "proxy_access",
+                                n_bytes_sent = %n_bytes_sent,
+                                n_bytes_recv = %n_bytes_recv,
+                                duration_ms = start.elapsed().as_millis(),
+                                "CONNECT tunnel finished successfully"
+                            );
+                        }
+                    }
                 }
+                Err(e) => error!(subsystem = "proxy_errors", "CONNECT upgrade error: {}", e),
             }
-            Err(e) => debug!("CONNECT upgrade error: {}", e),
         }
-    });
+        .in_current_span(),
+    );
 
     // Connection: keep-alive is
     // - the default for HTTP/1.1
@@ -368,6 +453,7 @@ async fn connect_to_http_proxy_backend(
 
     let (stream, use_http2): (OutboundStream, bool) = if backend.identity_aware {
         debug!(
+            subsystem = "proxy_access",
             "Backend is identity-aware, establishing a TLS connection to {}",
             backend.target_address
         );
@@ -415,7 +501,10 @@ async fn connect_to_http_proxy_backend(
             .map_err(io::Error::other)?;
         tokio::spawn(async move {
             if let Err(e) = conn.await {
-                warn!("Cannot HTTP CONNECT to upstream: {}", e);
+                warn!(
+                    subsystem = "proxy_errors",
+                    "Cannot HTTP CONNECT to upstream: {}", e
+                );
             }
         });
 
@@ -448,7 +537,10 @@ async fn connect_to_http_proxy_backend(
         // https://docs.rs/hyper/latest/hyper/client/conn/http1/struct.Builder.html#method.handshake
         tokio::spawn(async move {
             if let Err(e) = conn.with_upgrades().await {
-                warn!("Cannot HTTP CONNECT to upstream: {}", e);
+                warn!(
+                    subsystem = "proxy_errors",
+                    "Cannot HTTP CONNECT to upstream: {}", e
+                );
             }
         });
 
