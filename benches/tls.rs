@@ -1,7 +1,13 @@
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    future::poll_fn,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use http_body_util::{BodyExt, Empty, Full};
+use futures::future::join_all;
+use http_body_util::{BodyExt, Empty};
 use hyper::body::Bytes;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use portail::{acl::ACLRules, proxy::client_tls::connect_using_tls_auth, state};
@@ -15,6 +21,27 @@ use tokio_rustls::{
     },
 };
 
+const DUPLEX_BUF: usize = 64 * 1024;
+const REQUEST_COUNTS: &[usize] = &[1, 5, 20];
+const ROOT_COUNTS: &[usize] = &[1, 10, 100];
+
+#[derive(Clone, Copy)]
+enum Protocol {
+    Http1,
+    Http2,
+}
+
+#[derive(Clone, Copy)]
+enum BenchMode {
+    Sequential,
+    Multiplexed,
+}
+
+enum Sender {
+    Http1(hyper::client::conn::http1::SendRequest<Empty<Bytes>>),
+    Http2(hyper::client::conn::http2::SendRequest<Empty<Bytes>>),
+}
+
 fn empty_acl() -> ACLRules {
     ACLRules::default()
 }
@@ -27,10 +54,17 @@ struct Context {
 fn setup_context(root_count: usize) -> Context {
     let mut roots = RootCertStore::empty();
 
-    let mut ca_key = None;
-    let mut ca_params = None;
+    let ca_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+    let mut ca_params = CertificateParams::new(vec!["CA 0".to_string()]).unwrap();
+    ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
 
-    for i in 0..root_count {
+    let cert = ca_params.self_signed(&ca_key).unwrap();
+
+    roots
+        .add(CertificateDer::from(cert.der().to_vec()))
+        .unwrap();
+
+    for i in 1..root_count {
         let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
 
         let mut params = CertificateParams::new(vec![format!("CA {i}")]).unwrap();
@@ -41,19 +75,20 @@ fn setup_context(root_count: usize) -> Context {
         roots
             .add(CertificateDer::from(cert.der().to_vec()))
             .unwrap();
-
-        if i == 0 {
-            ca_key = Some(key);
-            ca_params = Some(params);
-        }
     }
 
-    let ca_key = ca_key.unwrap();
-    let ca_params = ca_params.unwrap();
-
     let issuer = Issuer::from_params(&ca_params, &ca_key);
+
     let server_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
-    let server_params = CertificateParams::new(vec!["localhost".into()]).unwrap();
+
+    let mut server_params = CertificateParams::new(vec![]).unwrap();
+    server_params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, "localhost");
+    server_params
+        .subject_alt_names
+        .push(rcgen::SanType::DnsName("localhost".try_into().unwrap()));
+
     let server_cert = server_params.signed_by(&server_key, &issuer).unwrap();
 
     let mut server_config = tokio_rustls::rustls::ServerConfig::builder()
@@ -72,6 +107,7 @@ fn setup_context(root_count: usize) -> Context {
         root_store: Some(Arc::new(roots)),
         server_certificates: None,
         client_cert_resolver: None,
+        backends: HashMap::new(),
     };
 
     Context {
@@ -89,7 +125,7 @@ async fn serve(acceptor: TlsAcceptor, io: DuplexStream) {
     let alpn = tls.get_ref().1.alpn_protocol().map(|x| x.to_vec());
 
     let service = hyper::service::service_fn(|_| async {
-        Ok::<_, hyper::Error>(hyper::Response::new(Full::new(Bytes::from_static(b"OK"))))
+        Ok::<_, hyper::Error>(hyper::Response::new(Empty::<Bytes>::new()))
     });
 
     let io = TokioIo::new(tls);
@@ -100,7 +136,6 @@ async fn serve(acceptor: TlsAcceptor, io: DuplexStream) {
                 .serve_connection(io, service)
                 .await;
         }
-
         _ => {
             let _ = hyper::server::conn::http1::Builder::new()
                 .serve_connection(io, service)
@@ -109,217 +144,198 @@ async fn serve(acceptor: TlsAcceptor, io: DuplexStream) {
     }
 }
 
-struct Http1Session {
-    sender: hyper::client::conn::http1::SendRequest<Empty<Bytes>>,
-    _driver: tokio::task::JoinHandle<()>,
-    _server: tokio::task::JoinHandle<()>,
+struct RequestTemplate {
+    uri: http::Uri,
+    host: http::HeaderValue,
 }
 
-impl Http1Session {
-    async fn new(acceptor: TlsAcceptor, state: Arc<RwLock<state::State>>) -> Self {
-        let (client, server) = tokio::io::duplex(1024 * 1024);
+impl RequestTemplate {
+    fn new() -> Self {
+        Self {
+            uri: "/".parse().unwrap(),
+            host: "localhost".parse().unwrap(),
+        }
+    }
+
+    fn build(&self) -> hyper::Request<Empty<Bytes>> {
+        hyper::Request::builder()
+            .uri(self.uri.clone())
+            .header("host", self.host.clone())
+            .body(Empty::new())
+            .unwrap()
+    }
+}
+
+struct SessionKeeper {
+    driver: tokio::task::JoinHandle<()>,
+    server: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for SessionKeeper {
+    fn drop(&mut self) {
+        self.driver.abort();
+        self.server.abort();
+    }
+}
+
+struct Session {
+    sender: Sender,
+    _keeper: SessionKeeper,
+}
+
+impl Session {
+    async fn new(
+        protocol: Protocol,
+        acceptor: TlsAcceptor,
+        state: Arc<RwLock<state::State>>,
+    ) -> Self {
+        let (client, server) = tokio::io::duplex(DUPLEX_BUF);
         let server_task = tokio::spawn(serve(acceptor, server));
+
+        let alpn = match protocol {
+            Protocol::Http1 => vec![b"http/1.1".to_vec()],
+            Protocol::Http2 => vec![b"h2".to_vec()],
+        };
+
         let tls = connect_using_tls_auth(
             client,
             ServerName::try_from("localhost").unwrap(),
             state,
-            vec![b"http/1.1".to_vec()],
+            alpn,
         )
         .await
         .unwrap();
 
         let io = TokioIo::new(tls);
-        let (sender, conn) = hyper::client::conn::http1::handshake(io).await.unwrap();
-        let driver = tokio::spawn(async move {
-            let _ = conn.await;
-        });
 
-        Self {
-            sender,
-            _driver: driver,
-            _server: server_task,
-        }
-    }
-
-    async fn request(&mut self) {
-        let req = hyper::Request::builder()
-            .uri("/")
-            .header("host", "localhost")
-            .body(Empty::<Bytes>::new())
-            .unwrap();
-
-        let response = self.sender.send_request(req).await.unwrap();
-        response.collect().await.unwrap();
-    }
-}
-
-struct Http2Session {
-    sender: hyper::client::conn::http2::SendRequest<Empty<Bytes>>,
-    _driver: tokio::task::JoinHandle<()>,
-    _server: tokio::task::JoinHandle<()>,
-}
-
-impl Http2Session {
-    async fn new(acceptor: TlsAcceptor, state: Arc<RwLock<state::State>>) -> Self {
-        let (client, server) = tokio::io::duplex(1024 * 1024);
-        let server_task = tokio::spawn(serve(acceptor, server));
-        let tls = connect_using_tls_auth(
-            client,
-            ServerName::try_from("localhost").unwrap(),
-            state,
-            vec![b"h2".to_vec()],
-        )
-        .await
-        .unwrap();
-
-        let io = TokioIo::new(tls);
-        let (sender, conn) = hyper::client::conn::http2::handshake(TokioExecutor::new(), io)
-            .await
-            .unwrap();
-        let driver = tokio::spawn(async move {
-            let _ = conn.await;
-        });
-
-        Self {
-            sender,
-            _driver: driver,
-            _server: server_task,
-        }
-    }
-
-    async fn batch(&self, concurrency: usize) {
-        let mut tasks = Vec::with_capacity(concurrency);
-
-        for _ in 0..concurrency {
-            let mut sender = self.sender.clone();
-
-            tasks.push(tokio::spawn(async move {
-                let req = hyper::Request::builder()
-                    .uri("/")
-                    .header("host", "localhost")
-                    .body(Empty::<Bytes>::new())
+        let (sender, driver) = match protocol {
+            Protocol::Http1 => {
+                let (s, conn) = hyper::client::conn::http1::handshake(io).await.unwrap();
+                let d = tokio::spawn(async move {
+                    let _ = conn.await;
+                });
+                (Sender::Http1(s), d)
+            }
+            Protocol::Http2 => {
+                let (s, conn) = hyper::client::conn::http2::handshake(TokioExecutor::new(), io)
+                    .await
                     .unwrap();
+                let d = tokio::spawn(async move {
+                    let _ = conn.await;
+                });
+                (Sender::Http2(s), d)
+            }
+        };
 
-                let response = sender.send_request(req).await.unwrap();
-
-                response.collect().await.unwrap();
-            }));
-        }
-
-        for t in tasks {
-            t.await.unwrap();
+        Self {
+            sender,
+            _keeper: SessionKeeper {
+                driver,
+                server: server_task,
+            },
         }
     }
+
+    async fn execute(&mut self, mode: BenchMode, count: usize, template: &RequestTemplate) {
+        match mode {
+            BenchMode::Sequential => {
+                for _ in 0..count {
+                    let req = template.build();
+                    match &mut self.sender {
+                        Sender::Http1(s) => {
+                            poll_fn(|cx| s.poll_ready(cx)).await.unwrap();
+                            let resp = s.send_request(req).await.unwrap();
+                            resp.collect().await.unwrap();
+                        }
+                        Sender::Http2(s) => {
+                            poll_fn(|cx| s.poll_ready(cx)).await.unwrap();
+                            let resp = s.send_request(req).await.unwrap();
+                            resp.collect().await.unwrap();
+                        }
+                    }
+                }
+            }
+            BenchMode::Multiplexed => {
+                if let Sender::Http2(s) = &self.sender {
+                    let futs = (0..count).map(|_| {
+                        let mut sender = s.clone();
+                        let req = template.build();
+                        async move {
+                            poll_fn(|cx| sender.poll_ready(cx)).await.unwrap();
+                            let resp = sender.send_request(req).await.unwrap();
+                            resp.collect().await.unwrap();
+                        }
+                    });
+                    join_all(futs).await;
+                }
+            }
+        }
+    }
+}
+
+fn run_bench_group(
+    c: &mut Criterion,
+    rt: &tokio::runtime::Runtime,
+    group_name: &str,
+    protocol: Protocol,
+    mode: BenchMode,
+) {
+    let mut group = c.benchmark_group(group_name);
+    group.warm_up_time(Duration::from_secs(1));
+
+    for &count in REQUEST_COUNTS {
+        group.throughput(Throughput::Elements(count as u64));
+
+        let ctx = setup_context(ROOT_COUNTS[1]);
+        let template = RequestTemplate::new();
+
+        group.bench_with_input(BenchmarkId::from_parameter(count), &count, |b, &count| {
+            let mut session = rt.block_on(Session::new(
+                protocol,
+                ctx.acceptor.clone(),
+                ctx.state.clone(),
+            ));
+            b.iter_custom(|iters| {
+                let start = Instant::now();
+                rt.block_on(async {
+                    for _ in 0..iters {
+                        session.execute(mode, count, &template).await;
+                    }
+                });
+                start.elapsed()
+            });
+        });
+    }
+    group.finish();
 }
 
 fn bench_proxy(c: &mut Criterion) {
-    let rt = tokio::runtime::Builder::new_current_thread()
+    let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .unwrap();
 
-    let ctx = setup_context(10);
-
-    {
-        let mut group = c.benchmark_group("http1_keepalive");
-
-        for requests in [1usize, 5, 20] {
-            group.throughput(Throughput::Elements(requests as u64));
-
-            group.bench_with_input(
-                BenchmarkId::from_parameter(requests),
-                &requests,
-                |b, &requests| {
-                    let mut session =
-                        rt.block_on(Http1Session::new(ctx.acceptor.clone(), ctx.state.clone()));
-
-                    b.iter_custom(|iters| {
-                        let start = std::time::Instant::now();
-                        rt.block_on(async {
-                            for _ in 0..iters {
-                                for _ in 0..requests {
-                                    session.request().await;
-                                }
-                            }
-                        });
-                        start.elapsed()
-                    });
-                },
-            );
-        }
-
-        group.finish();
-    }
-
-    {
-        let mut group = c.benchmark_group("http2_persistent");
-
-        for requests in [1usize, 5, 20] {
-            group.throughput(Throughput::Elements(requests as u64));
-
-            group.bench_with_input(
-                BenchmarkId::from_parameter(requests),
-                &requests,
-                |b, &requests| {
-                    let session =
-                        rt.block_on(Http2Session::new(ctx.acceptor.clone(), ctx.state.clone()));
-
-                    b.iter_custom(|iters| {
-                        let start = std::time::Instant::now();
-                        rt.block_on(async {
-                            for _ in 0..iters {
-                                for _ in 0..requests {
-                                    let mut s = session.sender.clone();
-
-                                    let req = hyper::Request::builder()
-                                        .uri("/")
-                                        .header("host", "localhost")
-                                        .body(Empty::<Bytes>::new())
-                                        .unwrap();
-
-                                    let response = s.send_request(req).await.unwrap();
-
-                                    response.collect().await.unwrap();
-                                }
-                            }
-                        });
-                        start.elapsed()
-                    });
-                },
-            );
-        }
-
-        group.finish();
-    }
-
-    {
-        let mut group = c.benchmark_group("http2_multiplexed");
-
-        for concurrency in [1usize, 8, 32] {
-            group.throughput(Throughput::Elements(concurrency as u64));
-
-            group.bench_with_input(
-                BenchmarkId::from_parameter(concurrency),
-                &concurrency,
-                |b, &concurrency| {
-                    let session =
-                        rt.block_on(Http2Session::new(ctx.acceptor.clone(), ctx.state.clone()));
-
-                    b.iter_custom(|iters| {
-                        let start = std::time::Instant::now();
-                        rt.block_on(async {
-                            for _ in 0..iters {
-                                session.batch(concurrency).await;
-                            }
-                        });
-                        start.elapsed()
-                    });
-                },
-            );
-        }
-
-        group.finish();
-    }
+    run_bench_group(
+        c,
+        &rt,
+        "http1_keepalive",
+        Protocol::Http1,
+        BenchMode::Sequential,
+    );
+    run_bench_group(
+        c,
+        &rt,
+        "http2_sequential",
+        Protocol::Http2,
+        BenchMode::Sequential,
+    );
+    run_bench_group(
+        c,
+        &rt,
+        "http2_multiplexed",
+        Protocol::Http2,
+        BenchMode::Multiplexed,
+    );
 }
 
 criterion_group!(benches, bench_proxy);
