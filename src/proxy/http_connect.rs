@@ -310,7 +310,7 @@ async fn handle_http_request(
                 .await
                 {
                     Ok(Ok(upstream)) => {
-                        debug!(
+                        info!(
                             subsystem = "proxy_access",
                             address = %final_address,
                             backend = ?backend,
@@ -354,7 +354,7 @@ async fn handle_http_request(
         let start = Instant::now();
         match timeout(settings.request_timeout, TcpStream::connect(&final_address)).await {
             Ok(Ok(socket)) => {
-                debug!(
+                info!(
                     subsystem = "proxy_access",
                     address = %final_address,
                     duration_ms = start.elapsed().as_millis(),
