@@ -17,8 +17,9 @@ use tokio_rustls::TlsStream;
 use tracing::{debug, info, warn};
 
 use crate::{
+    acl::ACLRules,
     config::{BackendSettings, KnownBackend, Settings},
-    proxy::context::{OwnedRequestContext, TargetContext},
+    proxy::context::{LocalRequestContext, OwnedRequestContext, TargetContext},
     state::State,
 };
 
@@ -26,6 +27,67 @@ use crate::{
 pub enum OutboundSock5Stream {
     Tls(Socks5Stream<TlsStream<TcpStream>>),
     Plain(Socks5Stream<TcpStream>),
+}
+
+enum Decision {
+    TerminateWithError(ReplyError),
+    RedirectDestination(TargetAddr),
+    Continue,
+}
+
+fn assess_request(
+    start: Instant,
+    target_context: &TargetContext,
+    ctx: &LocalRequestContext<'_>,
+    acl: &ACLRules,
+) -> Result<Decision, fast_socks5::SocksError> {
+    let assessment = match ctx.acl_ctx.evaluate_request(&acl.hir) {
+        Ok(assessment) => assessment,
+        Err(failure) => {
+            warn!(
+                subsystem = "proxy_errors",
+                "Failed to evaluate a request: {} (Context: {:#?})", failure, ctx
+            );
+            return Ok(Decision::TerminateWithError(ReplyError::GeneralFailure));
+        }
+    };
+
+    match assessment.action {
+        // FIXME: render the deny template if there's one.
+        crate::acl::Action::Deny(_explain_template) => {
+            info!(
+                subsystem = "proxy_access",
+                target_context = ?target_context,
+                duration_us = start.elapsed().as_micros(),
+                "SOCKS5 request blocked due to ACL"
+            );
+
+            Ok(Decision::TerminateWithError(
+                ReplyError::ConnectionNotAllowed,
+            ))
+        }
+        crate::acl::Action::Redirect(target) => {
+            info!(
+                subsystem = "proxy_access",
+                target_context = ?target_context,
+                redirected_to = %target,
+                duration_us = start.elapsed().as_micros(),
+                "SOCKS5 request redirected due to ACL"
+            );
+
+            Ok(Decision::RedirectDestination(TargetAddr::Domain(
+                target
+                    .host()
+                    .expect("BUG: Redirect target should be an FQDN")
+                    .to_owned(),
+                // FIXME: calculation of the default port should be better and take into account
+                // the scheme.
+                target.port_u16().unwrap_or(80),
+            )))
+        }
+
+        _ => Ok(Decision::Continue),
+    }
 }
 
 pub async fn connect_to_backend(
@@ -222,50 +284,13 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
         );
     }
 
-    let assessment = match ctx.acl_ctx.evaluate_request(&acl.hir) {
-        Ok(assessment) => assessment,
-        Err(failure) => {
-            proto.reply_error(&ReplyError::GeneralFailure).await?;
-            warn!(
-                subsystem = "proxy_errors",
-                "Failed to evaluate a request: {} (Context: {:#?})", failure, ctx
-            );
+    match assess_request(start, &target_context, &ctx, acl)? {
+        Decision::TerminateWithError(error) => {
+            proto.reply_error(&error).await?;
             return Ok(());
         }
-    };
-
-    match assessment.action {
-        // FIXME: render the deny template if there's one.
-        crate::acl::Action::Deny(_explain_template) => {
-            info!(
-                subsystem = "proxy_access",
-                target_context = ?target_context,
-                duration_us = start.elapsed().as_micros(),
-                "SOCKS5 request blocked due to ACL"
-            );
-            proto.reply_error(&ReplyError::ConnectionNotAllowed).await?;
-            return Ok(());
-        }
-        crate::acl::Action::Redirect(target) => {
-            info!(
-                subsystem = "proxy_access",
-                target_context = ?target_context,
-                redirected_to = %target,
-                duration_us = start.elapsed().as_micros(),
-                "SOCKS5 request redirected due to ACL"
-            );
-            final_addr = TargetAddr::Domain(
-                target
-                    .host()
-                    .expect("BUG: Redirect target should be an FQDN")
-                    .to_owned(),
-                // FIXME: calculation of the default port should be better and take into account
-                // the scheme.
-                target.port_u16().unwrap_or(80),
-            );
-        }
-
-        _ => {}
+        Decision::RedirectDestination(tgt_addr) => final_addr = tgt_addr,
+        Decision::Continue => {}
     }
 
     info!(
@@ -349,6 +374,28 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
             duration_ms = start.elapsed().as_millis(),
             "No backend, terminating the connection ourself"
         );
+
+        let start = Instant::now();
+
+        ctx.acl_ctx.insert(
+            "route.local",
+            crate::acl::ast::ConcreteOperand::Boolean(true),
+        );
+        match assess_request(start, &target_context, &ctx, acl)? {
+            Decision::TerminateWithError(error) => {
+                proto.reply_error(&error).await?;
+                return Ok(());
+            }
+            Decision::RedirectDestination(tgt_addr) => final_addr = tgt_addr,
+            Decision::Continue => {}
+        }
+
+        info!(
+            subsystem = "proxy_access",
+            duration_us = start.elapsed().as_micros(),
+            "SOCKS5 request allowed due to ACL (direct exit)"
+        );
+
         let start = Instant::now();
         match (cmd, opts.public_address) {
             (Socks5Command::TCPConnect, _) => {
