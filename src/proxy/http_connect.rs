@@ -1,5 +1,6 @@
+use crate::acl::ACLRules;
 use crate::config::KnownBackend;
-use crate::proxy::context::OwnedRequestContext;
+use crate::proxy::context::{LocalRequestContext, OwnedRequestContext};
 use crate::proxy::protocol_detect::{ALPN_H2, ALPN_HTTP1_1};
 use crate::{
     config::{BackendSettings, Settings},
@@ -7,6 +8,7 @@ use crate::{
     state::State,
 };
 use bytes::Bytes;
+use http::uri::Authority;
 use http_body_util::{BodyExt, Empty, combinators::BoxBody};
 use hyper::{
     Method, Request, Response, StatusCode,
@@ -18,6 +20,7 @@ use hyper::{
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use std::io;
 use std::sync::Arc;
+use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
@@ -34,6 +37,59 @@ type OutboundStream = Box<dyn OutboundStreamIo + Send + Unpin>;
 enum InboundHttpProtocol {
     Http1,
     Http2,
+}
+
+enum Decision {
+    TerminateWithResponse(Response<BoxBody<Bytes, hyper::Error>>),
+    RedirectDestination(String),
+    Continue,
+}
+
+fn assess_request(
+    start: Instant,
+    target_authority: &Authority,
+    ctx: &LocalRequestContext<'_>,
+    acl: &ACLRules,
+) -> Result<Decision, hyper::Error> {
+    let assessment = match ctx.acl_ctx.evaluate_request(&acl.hir) {
+        Ok(assessment) => assessment,
+        Err(failure) => {
+            let mut resp = Response::new(empty_body());
+            warn!(
+                subsystem = "proxy_errors",
+                "Failed to evaluate a request: {} (Context: {:#?})", failure, ctx
+            );
+            *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+            return Ok(Decision::TerminateWithResponse(resp));
+        }
+    };
+
+    match assessment.action {
+        // FIXME: render the deny template if there's one.
+        crate::acl::Action::Deny(_explain_template) => {
+            info!(
+                subsystem = "proxy_access",
+                duration_us = start.elapsed().as_micros(),
+                "Request denied by ACL",
+            );
+            let mut resp = Response::new(empty_body());
+            *resp.status_mut() = StatusCode::FORBIDDEN;
+
+            Ok(Decision::TerminateWithResponse(resp))
+        }
+        crate::acl::Action::Redirect(target) => {
+            info!(
+                subsystem = "proxy_access",
+                original_host = %target_authority.host(),
+                redirected_to = %target,
+                duration_us = start.elapsed().as_micros(),
+                "Request redirected by ACL",
+            );
+            Ok(Decision::RedirectDestination(target.to_string()))
+        }
+
+        _ => Ok(Decision::Continue),
+    }
 }
 
 /// References:
@@ -233,43 +289,10 @@ async fn handle_http_request(
         );
     }
 
-    let assessment = match ctx.acl_ctx.evaluate_request(&acl.hir) {
-        Ok(assessment) => assessment,
-        Err(failure) => {
-            let mut resp = Response::new(empty_body());
-            warn!(
-                subsystem = "proxy_errors",
-                "Failed to evaluate a request: {} (Context: {:#?})", failure, ctx
-            );
-            *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-            return Ok(resp);
-        }
-    };
-
-    match assessment.action {
-        // FIXME: render the deny template if there's one.
-        crate::acl::Action::Deny(_explain_template) => {
-            info!(
-                subsystem = "proxy_access",
-                duration_us = start.elapsed().as_micros(),
-                "Request denied by ACL",
-            );
-            let mut resp = Response::new(empty_body());
-            *resp.status_mut() = StatusCode::FORBIDDEN;
-            return Ok(resp);
-        }
-        crate::acl::Action::Redirect(target) => {
-            info!(
-                subsystem = "proxy_access",
-                original_host = %target_authority.host(),
-                redirected_to = %target,
-                duration_us = start.elapsed().as_micros(),
-                "Request redirected by ACL",
-            );
-            final_address = target.to_string();
-        }
-
-        _ => {}
+    match assess_request(start, target_authority, &ctx, acl)? {
+        Decision::TerminateWithResponse(resp) => return Ok(resp),
+        Decision::RedirectDestination(target) => final_address = target,
+        Decision::Continue => {}
     }
 
     info!(
@@ -343,7 +366,26 @@ async fn handle_http_request(
             }
         }
     }
+
     if stream.is_none() {
+        // At this point, we need to re-assess if the request can go through.
+        ctx.acl_ctx.insert(
+            "route.local",
+            crate::acl::ast::ConcreteOperand::Boolean(true),
+        );
+
+        match assess_request(start, target_authority, &ctx, acl)? {
+            Decision::TerminateWithResponse(resp) => return Ok(resp),
+            Decision::RedirectDestination(target) => final_address = target,
+            _ => {}
+        }
+
+        info!(
+            subsystem = "proxy_access",
+            duration_us = start.elapsed().as_micros(),
+            "Request allowed by ACL (direct exit context)",
+        );
+
         debug!(
             subsystem = "proxy_access",
             address = %final_address,
