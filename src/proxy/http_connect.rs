@@ -477,6 +477,14 @@ fn empty_body() -> BoxBody<Bytes, hyper::Error> {
         .boxed()
 }
 
+#[derive(Debug, Error)]
+pub enum UpstreamConnectError {
+    #[error("An IO error occurred: {0}")]
+    IO(#[from] std::io::Error),
+    #[error("The upstream response contains an error")]
+    UpstreamResponse(hyper::Response<Incoming>),
+}
+
 /// Send CONNECT and return the stream on 2xx response
 /// Ref: https://github.com/hyperium/hyper/blob/master/examples/client.rs
 ///
@@ -490,7 +498,7 @@ async fn connect_to_http_proxy_backend(
     final_address: &str,
     state: Arc<RwLock<State>>,
     inbound_protocol: &InboundHttpProtocol,
-) -> io::Result<OutboundStream> {
+) -> Result<OutboundStream, UpstreamConnectError> {
     let socket = TcpStream::connect(backend.target_address).await?;
 
     let (stream, use_http2): (OutboundStream, bool) = if backend.identity_aware {
@@ -556,13 +564,7 @@ async fn connect_to_http_proxy_backend(
             .map_err(io::Error::other)?;
 
         if !response.status().is_success() {
-            return Err(io::Error::new(
-                io::ErrorKind::ConnectionRefused,
-                format!(
-                    "HTTP proxy CONNECT failed with status {}",
-                    response.status()
-                ),
-            ));
+            return Err(UpstreamConnectError::UpstreamResponse(response));
         }
 
         let upgraded = hyper::upgrade::on(&mut response)
@@ -592,13 +594,7 @@ async fn connect_to_http_proxy_backend(
             .map_err(io::Error::other)?;
 
         if !response.status().is_success() {
-            return Err(io::Error::new(
-                io::ErrorKind::ConnectionRefused,
-                format!(
-                    "HTTP proxy CONNECT failed with status {}",
-                    response.status()
-                ),
-            ));
+            return Err(UpstreamConnectError::UpstreamResponse(response));
         }
 
         let upgraded = hyper::upgrade::on(&mut response)
