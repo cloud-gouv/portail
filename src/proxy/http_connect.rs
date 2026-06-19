@@ -344,8 +344,30 @@ async fn handle_http_request(
                         stream = Some(upstream);
                         break;
                     }
-                    Ok(Err(err)) => {
-                        debug!(
+                    Ok(Err(UpstreamConnectError::UpstreamResponse(resp))) => {
+                        // Send back the client errors.
+                        if resp.status().is_client_error() {
+                            info!(
+                                subsystem = "proxy_access",
+                                backend = ?backend,
+                                duration_ms = start.elapsed().as_millis(),
+                                status = %resp.status(),
+                                "Backend returned a non-200 client error for HTTP CONNECT, returning it to the client and terminating the request"
+                            );
+
+                            return Ok(resp.map(|b| b.boxed()));
+                        } else {
+                            info!(
+                                subsystem = "proxy_access",
+                                backend = ?backend,
+                                duration_ms = start.elapsed().as_millis(),
+                                status = %resp.status(),
+                                "Backend returned a non-200 response for HTTP CONNECT, trying next as it's not a client error"
+                            );
+                        }
+                    }
+                    Ok(Err(UpstreamConnectError::IO(err))) => {
+                        info!(
                             subsystem = "proxy_access",
                             backend = ?backend,
                             duration_ms = start.elapsed().as_millis(),
@@ -354,7 +376,7 @@ async fn handle_http_request(
                         );
                     }
                     Err(_) => {
-                        debug!(
+                        info!(
                             subsystem = "proxy_access",
                             backend = ?backend,
                             duration_ms = start.elapsed().as_millis(),
