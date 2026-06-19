@@ -19,7 +19,10 @@ use tracing::{debug, info, warn};
 use crate::{
     acl::ACLRules,
     config::{BackendSettings, KnownBackend, Settings},
-    proxy::context::{LocalRequestContext, OwnedRequestContext, TargetContext},
+    proxy::{
+        ACL_EVALUATION_TIMES, DIRECT_EXIT_TOTAL, UPSTREAMS_HEALTH, UPSTREAMS_LATENCY,
+        context::{LocalRequestContext, OwnedRequestContext, TargetContext},
+    },
     state::State,
 };
 
@@ -51,6 +54,10 @@ fn assess_request(
             return Ok(Decision::TerminateWithError(ReplyError::GeneralFailure));
         }
     };
+
+    ACL_EVALUATION_TIMES
+        .with_label_values(&[assessment.action.to_label()])
+        .observe(start.elapsed().as_secs_f64());
 
     match assessment.action {
         // FIXME: render the deny template if there's one.
@@ -140,11 +147,11 @@ pub async fn route_to_backend<S: AsyncRead + Unpin + AsyncWrite>(
     Ok(())
 }
 
-#[tracing::instrument(skip_all, fields(trace_id = %ctx.trace_id, client_address = %ctx.client_address, subsystem = "proxy_access"))]
+#[tracing::instrument(skip_all, fields(trace_id = %initial_ctx.trace_id, client_address = %initial_ctx.client_address, subsystem = "proxy_access"))]
 pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
     opts: Arc<Settings>,
     state: Arc<RwLock<State>>,
-    ctx: OwnedRequestContext,
+    initial_ctx: OwnedRequestContext,
     socket: S,
 ) -> Result<(), SocksError> {
     let should_resolve_dns: bool = state.read().await.default_backend.is_none();
@@ -185,7 +192,7 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
 
     let (host, port) = target_context.initial_target.clone().into_string_and_port();
 
-    let mut ctx = ctx.as_local();
+    let mut ctx = initial_ctx.as_local();
     ctx.acl_ctx.insert(
         "proxy.protocol",
         crate::acl::ast::ConcreteOperand::String("socks5"),
@@ -325,6 +332,13 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
                 .await
                 {
                     Ok(Ok(stream)) => {
+                        UPSTREAMS_LATENCY
+                            .with_label_values(&[backend.target_address.to_string()])
+                            .observe(start.elapsed().as_secs_f64());
+                        UPSTREAMS_HEALTH
+                            .with_label_values(&[backend.target_address.to_string()])
+                            .set(1);
+
                         debug!(
                             subsystem = "proxy_access",
                             backend = ?backend,
@@ -339,6 +353,7 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
                         debug!(
                             subsystem = "proxy_access",
                             duration_ms = start.elapsed().as_millis(),
+                            total_duration_ms = initial_ctx.creation_time.elapsed().as_secs_f64(),
                             "SOCKS5 request finished"
                         );
 
@@ -346,6 +361,9 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
                     }
 
                     Ok(Err(err)) => {
+                        UPSTREAMS_HEALTH
+                            .with_label_values(&[backend.target_address.to_string()])
+                            .set(0);
                         debug!(
                             subsystem = "proxy_errors",
                             backend = ?backend,
@@ -356,6 +374,9 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
                     }
 
                     Err(_) => {
+                        UPSTREAMS_HEALTH
+                            .with_label_values(&[backend.target_address.to_string()])
+                            .set(0);
                         debug!(
                             "Backend {} timed out after {:?}, trying the next one",
                             &backend.target_address, opts.request_timeout
@@ -421,8 +442,10 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
         debug!(
             subsystem = "proxy_access",
             duration_ms = start.elapsed().as_millis(),
+            total_duration_ms = initial_ctx.creation_time.elapsed().as_secs_f64(),
             "SOCKS5 request finished"
         );
+        DIRECT_EXIT_TOTAL.with_label_values(&["socks5"]).inc();
     }
 
     Ok(())
