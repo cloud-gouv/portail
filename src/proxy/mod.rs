@@ -14,7 +14,7 @@ use tracing::{Instrument, debug, error};
 
 use crate::{config::Settings, proxy::context::OwnedRequestContext, state::State};
 
-mod client_tls;
+pub mod client_tls;
 mod context;
 mod http_connect;
 mod protocol_detect;

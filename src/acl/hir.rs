@@ -23,7 +23,7 @@ pub struct PolicyDefinition {
     pub action: Action,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Default, Debug, Clone)]
 pub struct ACLHir {
     pub(crate) routes: Vec<RouteDefinition>,
     pub(crate) policies: Vec<PolicyDefinition>,
