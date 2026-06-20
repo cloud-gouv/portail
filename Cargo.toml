@@ -34,9 +34,9 @@ uuid = { version = "1.23.3", features = ["v4"] }
 tracing-appender = "0.2.5"
 
 [dev-dependencies]
-criterion = { version = "0.8.2", features = ["html_reports"] }
-insta = "1.47.2"
-rand = "0.10.1"
+criterion = { version = "=0.8.2", features = ["html_reports"] }
+insta = "=1.47.2"
+rand = "=0.10.1"
 
 [[bench]]
 name = "acl"
