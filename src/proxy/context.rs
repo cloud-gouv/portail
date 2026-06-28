@@ -52,7 +52,6 @@ impl From<fast_socks5::util::target_addr::TargetAddr> for TargetAddr {
 #[derive(Debug)]
 pub struct TargetContext {
     pub initial_target: TargetAddr,
-    pub resolved_target: Option<TargetAddr>,
 }
 
 #[derive(Debug, Clone)]
