@@ -4,13 +4,14 @@ use std::{
 };
 
 use fast_socks5::{
-    ReplyError, Socks5Command, SocksError, client::Socks5Stream, server::Socks5ServerProtocol,
-    util::target_addr::TargetAddr,
+    ReplyError, Socks5Command, SocksError,
+    client::Socks5Stream,
+    server::Socks5ServerProtocol,
+    util::target_addr::{AddrError, TargetAddr},
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpStream,
-    sync::RwLock,
     time::{Instant, timeout},
 };
 use tokio_rustls::TlsStream;
@@ -18,9 +19,12 @@ use tracing::{debug, info, warn};
 
 use crate::{
     acl::ACLRules,
-    config::{BackendSettings, KnownBackend, Settings},
-    proxy::context::{LocalRequestContext, OwnedRequestContext, TargetContext},
-    state::State,
+    config::{BackendSettings, KnownBackend},
+    dns::{DnsError, DnsResolver},
+    proxy::{
+        ProxyRuntime,
+        context::{LocalRequestContext, OwnedRequestContext, TargetContext},
+    },
 };
 
 #[allow(clippy::large_enum_variant)]
@@ -90,10 +94,11 @@ fn assess_request(
     }
 }
 
+// TODO: better error type
 pub async fn connect_to_backend(
     backend: &KnownBackend,
     final_address: &TargetAddr,
-    state: Arc<RwLock<State>>, // TODO: better error type
+    rt: Arc<ProxyRuntime>,
 ) -> Result<OutboundSock5Stream, SocksError> {
     let config = fast_socks5::client::Config::default();
     let (target_addr, target_port) = final_address.clone().into_string_and_port();
@@ -105,7 +110,7 @@ pub async fn connect_to_backend(
         let stream = crate::proxy::client_tls::connect_using_tls_auth(
             target_socket,
             domain,
-            state.clone(),
+            rt.state.clone(),
             vec![],
         )
         .await?;
@@ -142,12 +147,10 @@ pub async fn route_to_backend<S: AsyncRead + Unpin + AsyncWrite>(
 
 #[tracing::instrument(skip_all, fields(trace_id = %ctx.trace_id, client_address = %ctx.client_address, subsystem = "proxy_access"))]
 pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
-    opts: Arc<Settings>,
-    state: Arc<RwLock<State>>,
+    rt: Arc<ProxyRuntime>,
     ctx: OwnedRequestContext,
     socket: S,
 ) -> Result<(), SocksError> {
-    let should_resolve_dns: bool = state.read().await.default_backend.is_none();
     let start = Instant::now();
 
     let (proto, cmd, target_addr) = Socks5ServerProtocol::accept_no_auth(socket)
@@ -163,25 +166,9 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
     );
     let start = Instant::now();
 
-    let mut target_context = TargetContext {
+    let target_context = TargetContext {
         initial_target: target_addr.clone().into(),
-        resolved_target: None,
     };
-
-    let target_addr = if should_resolve_dns {
-        target_addr.resolve_dns().await?
-    } else {
-        target_addr
-    };
-
-    debug!(
-        subsystem = "proxy_access",
-        target_addr = %target_addr,
-        duration_ms = %start.elapsed().as_millis(),
-        "SOCKS5 resolved target address obtained"
-    );
-
-    let start = Instant::now();
 
     let (host, port) = target_context.initial_target.clone().into_string_and_port();
 
@@ -197,13 +184,7 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
         crate::acl::ast::ConcreteOperand::Number(port.into()),
     );
 
-    let mut final_addr = target_addr.clone();
-
-    target_context.resolved_target = if should_resolve_dns {
-        Some(target_addr.into())
-    } else {
-        None
-    };
+    let mut final_addr = target_addr;
 
     if cmd != Socks5Command::TCPConnect && cmd != Socks5Command::UDPAssociate {
         info!(
@@ -236,8 +217,8 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
     );
 
     let mut backends: Vec<BackendSettings> = Vec::with_capacity(1);
-    let acl = &state.read().await.acl_rules;
-    let backend_specs = &state.read().await.backends;
+    let acl = &rt.state.read().await.acl_rules;
+    let backend_specs = &rt.state.read().await.backends;
 
     // We evaluate first the routes as it can influence the ACL in case of a local exit.
     let mut recommended_routes = match ctx.acl_ctx.evaluate_routes(backend_specs, &acl.hir) {
@@ -257,9 +238,10 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
     }
 
     if backends.is_empty()
-        && let Some(ref backend_id) = state.read().await.default_backend
+        && let Some(ref backend_id) = rt.state.read().await.default_backend
     {
-        let backend = state
+        let backend = rt
+            .state
             .read()
             .await
             .backends
@@ -319,8 +301,8 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
             }
             BackendSettings::KnownBackend(backend) => {
                 match timeout(
-                    opts.request_timeout,
-                    connect_to_backend(&backend, &final_addr, state.clone()),
+                    rt.settings.request_timeout,
+                    connect_to_backend(&backend, &final_addr, rt.clone()),
                 )
                 .await
                 {
@@ -358,7 +340,7 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
                     Err(_) => {
                         debug!(
                             "Backend {} timed out after {:?}, trying the next one",
-                            &backend.target_address, opts.request_timeout
+                            &backend.target_address, rt.settings.request_timeout
                         );
                         continue;
                     }
@@ -367,7 +349,7 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
         }
     }
 
-    // If we get there, this means that we did not have any backend at all.
+    // Direct exit: if we get there, this means that we did not have any backend at all.
     {
         debug!(
             subsystem = "proxy_access",
@@ -397,18 +379,29 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
         );
 
         let start = Instant::now();
-        match (cmd, opts.public_address) {
+        match (cmd, rt.settings.public_address) {
             (Socks5Command::TCPConnect, _) => {
+                let resolved_target = resolve(&rt.dns, final_addr, start).await?;
+                debug!(
+                    subsystem = "proxy_access",
+                    target_addr = %resolved_target,
+                    duration_ms = start.elapsed().as_millis(),
+                    "SOCKS5 direct exit target address resolved"
+                );
+
+                // TODO: run_tcp_proxy only tries one address.
                 fast_socks5::server::run_tcp_proxy(
                     proto,
-                    &final_addr,
-                    opts.request_timeout,
-                    opts.tcp_nodelay,
+                    &TargetAddr::Ip(resolved_target),
+                    rt.settings.request_timeout,
+                    rt.settings.tcp_nodelay,
                 )
                 .await?;
             }
 
             (Socks5Command::UDPAssociate, Some(public_address)) => {
+                // TODO: fast_socks5 does its own DNS resolution on each UDP packet using the system resolver.
+                // https://github.com/dizda/fast-socks5/blob/acb847616ec44b6c2d6cdaddeba090d18c6c5d5c/src/server.rs#L1245
                 fast_socks5::server::run_udp_proxy(proto, &final_addr, None, public_address, None)
                     .await?;
             }
@@ -426,4 +419,52 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
     }
 
     Ok(())
+}
+
+async fn resolve(
+    dns: &DnsResolver,
+    target: TargetAddr,
+    start: Instant,
+) -> Result<SocketAddr, SocksError> {
+    match target {
+        TargetAddr::Ip(addr) => Ok(addr),
+        TargetAddr::Domain(host, port) => match dns.lookup(&host).await {
+            Ok(ips) => {
+                let ip = ips
+                    .into_iter()
+                    .next()
+                    .expect("Broken invariant: lookup returns at least one address");
+                let resolved_target = SocketAddr::new(ip, port);
+                debug!(
+                    subsystem = "proxy_access",
+                    host = %host,
+                    port = %port,
+                    resolved_target = %resolved_target,
+                    duration_ms = start.elapsed().as_millis(),
+                    "SOCKS5 DNS resolution successful",
+                );
+                Ok(resolved_target)
+            }
+            Err(err) => {
+                warn!(
+                    subsystem = "proxy_errors",
+                    host = %host,
+                    port = %port,
+                    duration_ms = start.elapsed().as_millis(),
+                    "SOCKS5 DNS resolution failed: {err}",
+                );
+                match err {
+                    DnsError::LookupFailed { source, .. } => Err(SocksError::AddrError(
+                        AddrError::DNSResolutionFailed(source),
+                    )),
+                    DnsError::TimedOut { .. } => Err(SocksError::AddrError(
+                        AddrError::DNSResolutionFailed(std::io::Error::other(err)),
+                    )),
+                    DnsError::NoRecords { .. } => {
+                        Err(SocksError::AddrError(AddrError::NoDNSRecords))
+                    }
+                }
+            }
+        },
+    }
 }

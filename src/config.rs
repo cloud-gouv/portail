@@ -142,6 +142,34 @@ pub struct RPCSettings {
     pub trusted_groups: Vec<String>,
 }
 
+fn default_dns_timeout() -> Duration {
+    Duration::from_secs(5)
+}
+
+#[serde_with::serde_as]
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct DnsSettings {
+    /// Resolvers for direct-exit name resolution.
+    /// When empty, the system resolver is used instead.
+    #[serde(default)]
+    pub resolvers: Vec<std::net::IpAddr>,
+
+    /// Timeout for DNS lookups.
+    #[serde_as(as = "serde_with::DurationSeconds<u64>")]
+    #[serde(default = "default_dns_timeout")]
+    pub timeout: Duration,
+}
+
+impl Default for DnsSettings {
+    fn default() -> Self {
+        Self {
+            resolvers: Vec::new(),
+            timeout: default_dns_timeout(),
+        }
+    }
+}
+
 #[serde_with::serde_as]
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -165,6 +193,10 @@ pub struct Settings {
 
     /// Whether to set a default upstream.
     pub default_backend: Option<String>,
+
+    /// DNS settings for direct-exit name resolution.
+    #[serde(default)]
+    pub dns: DnsSettings,
 
     /// List of backends to which we can route proxy queries.
     #[serde(default)]
