@@ -901,4 +901,131 @@ in
       ), "Unexpected result from the web service: {}".format(json.dumps(result))
     '';
   };
+
+  # Tests in-process DNS resolution.
+  dns-resolver =
+    let
+      dnsServerIp = "192.168.1.10";
+      corpServerIp = "192.168.1.200";
+      nodeIp = "192.168.1.100";
+    in
+    pkgs.testers.nixosTest {
+      name = "dns-resolver";
+      nodes = {
+        corp-server = mkServiceNode { };
+
+        dns-server = {
+          networking.interfaces.eth1.ipv4.addresses = [
+            {
+              address = dnsServerIp;
+              prefixLength = 24;
+            }
+          ];
+
+          networking.firewall.allowedUDPPorts = [ 53 ];
+
+          services.dnsmasq = {
+            enable = true;
+            #resolveLocalQueries = false;
+            settings = {
+              #interface = [ "eth1" ];
+              #bind-interfaces = true;
+              listen-address = [ dnsServerIp ];
+              address = [ "/${helloDomain}/${corpServerIp}" ];
+            };
+          };
+        };
+
+        node = { ... }: {
+          imports = [ ../module.nix portailEnv ];
+
+          # No networking.hosts entries.
+
+          networking.interfaces.eth1.ipv4.addresses = [
+            {
+              address = nodeIp;
+              prefixLength = 24;
+            }
+          ];
+
+          networking.firewall.allowedTCPPorts = [ 8080 ];
+
+          environment.systemPackages = [ pkgs.dnsutils ];
+
+          services.portail = {
+            enable = true;
+            enableAtBoot = true;
+            proxyListenStream = "0.0.0.0:8080";
+            settings.dns.resolvers = [ dnsServerIp ];
+            acl.filter.rules.default =
+              ''
+                policy hello {
+                  when host == "${helloDomain}"
+                  action allow
+                }
+              '';
+          };
+        };
+      };
+
+      testScript = ''
+        import json
+
+        hello_host = "${helloDomain}"
+        dns_server_ip = "${dnsServerIp}"
+        corp_server_ip = "${corpServerIp}"
+        self_ip = "${nodeIp}"
+
+        start_all()
+
+        # Wait for the server to be ready.
+        corp_server.wait_for_unit("multi-user.target")
+
+        # Wait for NGINX to be ready.
+        corp_server.wait_for_unit("nginx.service")
+        corp_server.wait_for_open_port(80)
+
+        # Wait for dnsmasq to be ready.
+        dns_server.wait_for_unit("multi-user.target")
+        dns_server.wait_for_unit("dnsmasq.service")
+
+        # Wait for portail to be ready.
+        node.wait_for_unit("multi-user.target")
+        node.wait_for_unit("portail.service")
+        node.wait_for_open_port(8080)
+
+        # ${helloDomain} is not in /etc/hosts on the portail node.
+        node.fail(f"getent ahostsv4 {hello_host}")
+
+        # The DNS server resolves the name.
+        resolved_ip = node.succeed(f"dig @{dns_server_ip} {hello_host} +short +time=2").strip()
+        assert resolved_ip == corp_server_ip, f"expected {corp_server_ip}, got {resolved_ip!r}"
+
+        # URL is not resolved by the system resolver.
+        node.fail(
+          f"curl --fail --socks5 127.0.0.1:8080 http://{hello_host}"
+        )
+
+        # Test in-process DNS resolution for SOCKS5.
+        result = json.loads(node.succeed(
+          f"curl --fail --socks5-hostname 127.0.0.1:8080 http://{hello_host}"
+        ))
+        assert (
+          result['service'] == 'hello.corp'
+          and result['remote_addr'] == self_ip
+          and result['protocol'] == 'HTTP/1.1'
+        ), "Unexpected SOCKS5 result: {}".format(json.dumps(result))
+
+        # Test in-process DNS resolution for HTTP CONNECT.
+        result = json.loads(node.succeed(
+          f"curl --fail --proxytunnel --proxy http://127.0.0.1:8080 http://{hello_host}"
+        ))
+        assert (
+          result['service'] == 'hello.corp'
+          and result['remote_addr'] == self_ip
+          and not result['tls']
+          and result['protocol'] == 'HTTP/1.1'
+        ), "Unexpected HTTP CONNECT result: {}".format(json.dumps(result))
+      '';
+    };
 }

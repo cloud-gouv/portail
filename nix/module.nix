@@ -96,6 +96,7 @@ in
       filter-acl-rules-path = aclRulesFilePath;
       request-timeout = mkDefault 30;
       tcp-nodelay = mkDefault false;
+      dns.timeout = mkDefault 5;
     };
 
     systemd.sockets = {
