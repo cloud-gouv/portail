@@ -126,6 +126,29 @@ let
     };
   };
 
+  mkUdpServer = { address, port, logPath }: {
+    networking.interfaces.eth1.ipv4.addresses = [
+      {
+        inherit address;
+        prefixLength = 24;
+      }
+    ];
+
+    networking.firewall.allowedUDPPorts = [ port ];
+
+    # Write UDP payloads to a file.
+    systemd.services.udp-server = {
+      description = "Log UDP payloads";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "network.target" ];
+      serviceConfig = {
+        Type = "simple";
+        ExecStart = "${pkgs.socat}/bin/socat UDP4-RECVFROM:${toString port},reuseaddr,fork OPEN:${logPath},creat,append";
+        Restart = "always";
+      };
+    };
+  };
+
   portailExamples = pkgs.callPackage ../portail-examples.nix { };
 in
 {
@@ -901,4 +924,132 @@ in
       ), "Unexpected result from the web service: {}".format(json.dumps(result))
     '';
   };
+
+  # Tests that ACLs are evaluated on each UDP datagram from socks5 UDP ASSOCIATE.
+  socks5-udp-associate-acl =
+    let
+      nodeIp = "192.168.1.100";
+      allowedServerIp = "192.168.1.210";
+      evilServerIp = "192.168.1.220";
+      allowedHost = "allowed.example.com";
+      evilHost = "evil.example.com";
+      udpPort = 9999;
+      udpLog = "/tmp/udp-datagrams.log";
+    in
+    pkgs.testers.nixosTest {
+      name = "socks5-udp-associate-acl";
+      nodes = {
+        allowed-server = mkUdpServer {
+          address = allowedServerIp;
+          port = udpPort;
+          logPath = udpLog;
+        };
+        evil-server = mkUdpServer {
+          address = evilServerIp;
+          port = udpPort;
+          logPath = udpLog;
+        };
+
+        node = { nodes, ... }: {
+          imports = [ ../module.nix portailEnv ];
+
+          networking.interfaces.eth1.ipv4.addresses = [
+            {
+              address = nodeIp;
+              prefixLength = 24;
+            }
+          ];
+
+          networking.hosts."${allowedServerIp}" = [ allowedHost ];
+          networking.hosts."${evilServerIp}" = [ evilHost ];
+
+          networking.firewall.allowedTCPPorts = [ 8080 ];
+
+          environment.systemPackages = [ portailExamples ];
+
+          services.portail = {
+            enable = true;
+            enableAtBoot = true;
+            proxyListenStream = "0.0.0.0:8080";
+            settings = {
+              public-address = "127.0.0.1";
+            };
+            acl.filter.rules = {
+              # Allow the TCP control connection.
+              "05-allow-udp-associate" = ''
+                policy allow_udp_associate {
+                  when proxy.cmd == "udp_associate"
+                  action allow
+                }
+              '';
+              "10-allow-allowed" = ''
+                policy allow_allowed {
+                  when host =~ "${allowedHost}"
+                  action allow
+                }
+              '';
+            };
+          };
+        };
+      };
+
+      testScript = ''
+        allowed_host = "${allowedHost}"
+        evil_host = "${evilHost}"
+        evil_ip = "${evilServerIp}"
+        udp_port = ${toString udpPort}
+        proxy = "127.0.0.1:8080"
+        udp_log = "${udpLog}"
+
+        def send_udp(host, payload):
+          return (
+            f"socks5-udp --proxy {proxy} --host {host} --port {udp_port} --payload {payload}"
+          )
+
+        def clear_udp_log(server):
+          server.succeed(f"truncate -s 0 {udp_log}")
+
+        start_all()
+
+        allowed_server.wait_for_unit("udp-server.service")
+        evil_server.wait_for_unit("udp-server.service")
+
+        node.wait_for_unit("multi-user.target")
+        node.wait_for_unit("portail.service")
+        node.wait_for_open_port(8080)
+
+        # evil_host is blocked by ACL.
+        node.fail(
+          f"curl --fail --connect-timeout 5 --socks5-hostname {proxy} http://{evil_host}"
+        )
+
+        clear_udp_log(allowed_server)
+        clear_udp_log(evil_server)
+
+        # allowed_host receives UDP datagrams.
+        node.succeed(send_udp(allowed_host, "allowed-payload"))
+        allowed_server.wait_until_succeeds(
+          f"grep -q allowed-payload {udp_log}",
+          timeout=10,
+        )
+        evil_server.fail(f"grep -q allowed-payload {udp_log}")
+
+        clear_udp_log(allowed_server)
+        clear_udp_log(evil_server)
+
+        # evil_host should not receive UDP datagrams.
+        node.succeed(send_udp(evil_host, "exfiltrate-host"))
+        node.sleep(3)
+        # TODO: this should not succeed
+        evil_server.succeed(f"grep -q exfiltrate-host {udp_log}")
+
+        clear_udp_log(evil_server)
+
+        # evil_ip should not receive UDP datagrams.
+        node.succeed(send_udp(evil_ip, "exfiltrate-ip"))
+        node.sleep(3)
+        # TODO: this should not succeed
+        evil_server.succeed(f"grep -q exfiltrate-ip {udp_log}")
+      '';
+    };
 }
