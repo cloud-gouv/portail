@@ -205,7 +205,8 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
         None
     };
 
-    if cmd != Socks5Command::TCPConnect && cmd != Socks5Command::UDPAssociate {
+    // TODO: enable UDP ASSOCIATE once ACL rules are evaluated on each UDP packet
+    if cmd != Socks5Command::TCPConnect {
         info!(
             subsystem = "proxy_errors",
             command = ?cmd,
@@ -408,11 +409,11 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
                 .await?;
             }
 
-            (Socks5Command::UDPAssociate, Some(public_address)) => {
-                fast_socks5::server::run_udp_proxy(proto, &final_addr, None, public_address, None)
-                    .await?;
-            }
-
+            // TODO: enable with ACL rules evaluation
+            // (Socks5Command::UDPAssociate, Some(public_address)) => {
+            //     fast_socks5::server::run_udp_proxy(proto, &final_addr, None, public_address, None)
+            //         .await?;
+            // }
             _ => {
                 proto.reply_error(&ReplyError::CommandNotSupported).await?;
                 return Err(ReplyError::CommandNotSupported.into());
