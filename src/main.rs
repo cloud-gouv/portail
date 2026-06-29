@@ -12,6 +12,7 @@ use crate::systemd::sd_notify_ready;
 
 mod acl;
 mod config;
+mod dns;
 mod logging;
 mod proxy;
 mod rpc;
@@ -281,6 +282,9 @@ async fn main() -> Result<()> {
                 state::init(&settings).context("While initializing application state")?,
             ));
 
+            let proxy_rt = proxy::ProxyRuntime::new(settings.clone(), state.clone())
+                .context("While building proxy runtime")?;
+
             debug!("Loaded Portail settings and state");
 
             let fds_named = systemd::listen_fds_named();
@@ -312,7 +316,7 @@ async fn main() -> Result<()> {
             info!("Starting services");
 
             let (proxy_fut, rpc_fut) = (
-                proxy::start(settings.clone(), state.clone(), tcp_listener),
+                proxy::start(proxy_rt, tcp_listener),
                 rpc::start(settings.clone(), state.clone(), rpc_listener),
             );
 

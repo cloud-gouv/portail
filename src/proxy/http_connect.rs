@@ -1,12 +1,11 @@
 use crate::acl::ACLRules;
+use crate::config::BackendSettings;
 use crate::config::KnownBackend;
+use crate::proxy::connect_tcp;
 use crate::proxy::context::{LocalRequestContext, OwnedRequestContext};
 use crate::proxy::protocol_detect::{ALPN_H2, ALPN_HTTP1_1};
-use crate::{
-    config::{BackendSettings, Settings},
-    proxy::{ProxyError, client_tls},
-    state::State,
-};
+use crate::proxy::{ProxyError, ProxyRuntime, client_tls};
+use crate::state::State;
 use bytes::Bytes;
 use http::uri::Authority;
 use http_body_util::{BodyExt, Empty, combinators::BoxBody};
@@ -98,8 +97,7 @@ fn assess_request(
 /// - https://github.com/hyperium/hyper/blob/master/examples/upgrades.rs
 #[tracing::instrument(skip_all, fields(trace_id = %ctx.trace_id, client_address = %ctx.client_address, subsystem = "proxy_access"))]
 pub async fn serve_http1_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
-    settings: Arc<Settings>,
-    state: Arc<RwLock<State>>,
+    rt: Arc<ProxyRuntime>,
     ctx: OwnedRequestContext,
     stream: S,
 ) -> Result<(), ProxyError> {
@@ -112,13 +110,7 @@ pub async fn serve_http1_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
         .serve_connection(
             io,
             service_fn(move |req| {
-                handle_http_request(
-                    req,
-                    ctx.clone(),
-                    settings.clone(),
-                    state.clone(),
-                    InboundHttpProtocol::Http1,
-                )
+                handle_http_request(req, ctx.clone(), rt.clone(), InboundHttpProtocol::Http1)
             }),
         )
         .with_upgrades()
@@ -130,8 +122,7 @@ pub async fn serve_http1_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
 
 #[tracing::instrument(skip_all, fields(trace_id = %ctx.trace_id, client_address = %ctx.client_address, subsystem = "proxy_access"))]
 pub async fn serve_http2_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
-    settings: Arc<Settings>,
-    state: Arc<RwLock<State>>,
+    rt: Arc<ProxyRuntime>,
     ctx: OwnedRequestContext,
     stream: S,
 ) -> Result<(), ProxyError> {
@@ -148,13 +139,7 @@ pub async fn serve_http2_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
         .serve_connection(
             io,
             service_fn(move |req| {
-                handle_http_request(
-                    req,
-                    ctx.clone(),
-                    settings.clone(),
-                    state.clone(),
-                    InboundHttpProtocol::Http2,
-                )
+                handle_http_request(req, ctx.clone(), rt.clone(), InboundHttpProtocol::Http2)
             }),
         )
         .await
@@ -167,8 +152,7 @@ pub async fn serve_http2_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
 async fn handle_http_request(
     req: Request<Incoming>,
     initial_ctx: OwnedRequestContext,
-    settings: Arc<Settings>,
-    state: Arc<RwLock<State>>,
+    rt: Arc<ProxyRuntime>,
     inbound_protocol: InboundHttpProtocol,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
     let mut ctx = initial_ctx.as_local();
@@ -203,11 +187,11 @@ async fn handle_http_request(
     let target_address = target_authority.to_string();
     let mut final_address = target_address.clone();
     let mut backends: Vec<BackendSettings> = Vec::with_capacity(1);
-    let backend_specs = &state.read().await.backends;
+    let backend_specs = &rt.state.read().await.backends;
     debug!(subsystem = "proxy_access", final_address = %final_address,
         "HTTP CONNECT request");
     // We evaluate first whether we are allowed then we evaluate routes.
-    let acl = &state.read().await.acl_rules;
+    let acl = &rt.state.read().await.acl_rules;
 
     let default_port = match req.uri().scheme_str().unwrap_or("http") {
         "http" => 80,
@@ -262,9 +246,10 @@ async fn handle_http_request(
     }
 
     if backends.is_empty()
-        && let Some(ref backend_id) = state.read().await.default_backend
+        && let Some(ref backend_id) = rt.state.read().await.default_backend
     {
-        let backend = state
+        let backend = rt
+            .state
             .read()
             .await
             .backends
@@ -322,11 +307,11 @@ async fn handle_http_request(
             }
             BackendSettings::KnownBackend(backend) => {
                 match timeout(
-                    settings.request_timeout,
+                    rt.settings.request_timeout,
                     connect_to_http_proxy_backend(
                         &backend,
                         &final_address,
-                        state.clone(),
+                        rt.state.clone(),
                         &inbound_protocol,
                     ),
                 )
@@ -380,7 +365,7 @@ async fn handle_http_request(
                             subsystem = "proxy_access",
                             backend = ?backend,
                             duration_ms = start.elapsed().as_millis(),
-                            configured_timeout_ms = settings.request_timeout.as_millis(),
+                            configured_timeout_ms = rt.settings.request_timeout.as_millis(),
                             "Backend timed out for HTTP CONNECT, trying next",
                         );
                     }
@@ -416,28 +401,65 @@ async fn handle_http_request(
         );
 
         let start = Instant::now();
-        match timeout(settings.request_timeout, TcpStream::connect(&final_address)).await {
-            Ok(Ok(socket)) => {
+        let authority: Authority = match final_address.parse() {
+            Ok(authority) => authority,
+            Err(_) => {
+                warn!(
+                    subsystem = "proxy_errors",
+                    address = %final_address,
+                    duration_ms = start.elapsed().as_millis(),
+                    "Direct connection target is an invalid authority",
+                );
+                let mut resp = Response::new(empty_body());
+                *resp.status_mut() = StatusCode::BAD_REQUEST;
+                return Ok(resp);
+            }
+        };
+
+        let port = authority.port_u16().unwrap_or(default_port);
+        let ips = match rt.dns.lookup(authority.host()).await {
+            Ok(ips) => {
+                debug!(
+                    subsystem = "proxy_access",
+                    host = %authority.host(),
+                    port = %port,
+                    address_count = ips.len(),
+                    duration_ms = start.elapsed().as_millis(),
+                    "HTTP CONNECT DNS resolution successful",
+                );
+                ips
+            }
+            Err(err) => {
+                warn!(
+                    subsystem = "proxy_errors",
+                    address = %final_address,
+                    duration_ms = start.elapsed().as_millis(),
+                    "Direct connection DNS resolution failed: {err}",
+                );
+                let mut resp = Response::new(empty_body());
+                *resp.status_mut() = StatusCode::BAD_GATEWAY;
+                return Ok(resp);
+            }
+        };
+
+        match connect_tcp(&ips, port, rt.settings.request_timeout).await {
+            Ok((socket, resolved_target)) => {
                 info!(
                     subsystem = "proxy_access",
                     address = %final_address,
+                    resolved_target = %resolved_target,
                     duration_ms = start.elapsed().as_millis(),
                     "Stream directly established to final address (local exit)"
                 );
                 stream = Some(Box::new(socket))
             }
-            Ok(Err(e)) => warn!(
+            Err(e) => warn!(
                 subsystem = "proxy_errors",
                 address = %final_address,
                 duration_ms = start.elapsed().as_millis(),
+                configured_timeout_ms = rt.settings.request_timeout.as_millis(),
                 "Direct connection failed: {}",
-                e),
-            Err(_) => warn!(
-                subsystem = "proxy_errors",
-                address = %final_address,
-                duration_ms = start.elapsed().as_millis(),
-                configured_timeout_ms = settings.request_timeout.as_millis(),
-                "Direct connection failed due to timeout",
+                e
             ),
         }
     }
