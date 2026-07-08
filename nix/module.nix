@@ -129,6 +129,9 @@ in
       description = "Portail access proxy";
       wantedBy = mkIf cfg.enableAtBoot [ "multi-user.target" ];
 
+      after = [ "portail-rpc.socket" "portail-proxy.socket" ];
+      requires = [ "portail-rpc.socket" "portail-proxy.socket" ];
+
       serviceConfig = {
         # Use "notify-reload" when https://github.com/cloud-gouv/portail/issues/9 is done.
         Type = "notify";
