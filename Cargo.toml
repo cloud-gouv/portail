@@ -28,7 +28,7 @@ toml = "^1"
 tracing = "^0.1"
 tracing-subscriber = { version = "^0.3", features = ["env-filter", "json", "std"] }
 winnow = "^1"
-zlink = "^0.5"
+zlink = "^0.7.0"
 rustls-pki-types = "^1"
 uuid = { version = "1.23.3", features = ["v4"] }
 tracing-appender = "0.2.5"
