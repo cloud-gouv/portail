@@ -13,7 +13,7 @@ bytes = "^1"
 clap = { version = "^4", features = ["derive", "string"] }
 fast-socks5 = "^1"
 http = "^1"
-http-body-util = "0.1.3"
+http-body-util = "^0.1"
 hyper = { version = "^1", features = ["full"] }
 hyper-util = { version = "^0.1", features = ["tokio", "server", "http1"] }
 nix = { version = "^0.31", features = ["socket", "uio", "net"] }
@@ -28,9 +28,9 @@ toml = "^1"
 tracing = "^0.1"
 tracing-subscriber = { version = "^0.3", features = ["env-filter", "json", "std"] }
 winnow = "^1"
-zlink = "^0.5"
+zlink = "^0.7"
 rustls-pki-types = "^1"
-uuid = { version = "1.23.3", features = ["v4"] }
+uuid = { version = "^1", features = ["v4"] }
 tracing-appender = "0.2.5"
 
 [dev-dependencies]

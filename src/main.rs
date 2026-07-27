@@ -148,10 +148,13 @@ async fn main() -> Result<()> {
             };
             let _guards = logging::init(preset).expect("Failed to initialize logging");
 
-            let mut connection = zlink::unix::connect(&rpc_socket).await.context(format!(
-                "Opening the RPC socket at path '{}'",
-                rpc_socket.display()
-            ))?;
+            let mut connection =
+                zlink::tokio::unix::connect(&rpc_socket)
+                    .await
+                    .context(format!(
+                        "Opening the RPC socket at path '{}'",
+                        rpc_socket.display()
+                    ))?;
 
             match command {
                 RpcCommands::PrintCurrentBackend => {
@@ -241,9 +244,13 @@ async fn main() -> Result<()> {
                     backend_id,
                     target_address,
                 } => {
-                    let mut connection = zlink::unix::connect(&rpc_socket).await.context(
-                        format!("Opening the RPC socket at path '{}'", rpc_socket.display()),
-                    )?;
+                    let mut connection =
+                        zlink::tokio::unix::connect(&rpc_socket)
+                            .await
+                            .context(format!(
+                                "Opening the RPC socket at path '{}'",
+                                rpc_socket.display()
+                            ))?;
                     connection
                         .update_dynamic_backend(&backend_id, DynamicBackendSpec {
                             target_address: format!("{}", target_address),
