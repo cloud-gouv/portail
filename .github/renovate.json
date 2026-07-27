@@ -1,0 +1,14 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "local>cloud-gouv/renovate-config",
+    "schedule:weekly"
+  ],
+  "lockFileMaintenance": {
+    "enabled": true
+  },
+  "dependencyDashboard": true,
+  "nix": {
+    "enabled": true
+  }
+}
