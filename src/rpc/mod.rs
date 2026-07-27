@@ -13,7 +13,6 @@ use zlink::{
     Server,
     connection::{Gid, Socket, socket::FetchPeerCredentials},
     service,
-    unix::Listener,
 };
 
 pub mod fr_gouv_portail_control;
@@ -280,7 +279,7 @@ pub async fn start(
     state: Arc<RwLock<State>>,
     listener: UnixListener,
 ) -> anyhow::Result<()> {
-    let server: Server<Listener, _> = Server::new(
+    let server: Server<zlink::tokio::unix::Listener, _> = Server::new(
         listener.into(),
         Control::new(settings.clone(), state.clone()),
     );
