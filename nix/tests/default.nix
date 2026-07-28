@@ -878,7 +878,7 @@ in
 
       # Test SOCKS5 curl -> portail -> portail alpha -> corp-server
       result = json.loads(node.succeed(
-        "curl --fail --socks5 http://127.0.0.1:8080 http://hello.corp.example.com"
+        "curl --fail --socks5 127.0.0.1:8080 http://hello.corp.example.com"
       ))
 
       assert (
@@ -892,7 +892,7 @@ in
 
       # Test SOCKS5 curl -> portail -> microsocks beta -> corp-server
       result = json.loads(node.succeed(
-        "curl --fail --socks5 http://127.0.0.1:8080 http://hello.corp.example.com"
+        "curl --fail --socks5 127.0.0.1:8080 http://hello.corp.example.com"
       ))
 
       assert (
