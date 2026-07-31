@@ -13,7 +13,7 @@ use thiserror::Error;
 
 use crate::config::Settings;
 
-#[derive(Debug, Clone)]
+#[derive(Default, Debug, Clone)]
 pub struct ACLRules {
     pub hir: ACLHir,
 }
