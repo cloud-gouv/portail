@@ -79,6 +79,11 @@ in
         description = "Proxy listen stream in the systemd.socket(5) ListenStream= syntax.";
       };
 
+      metricsPort = mkOption {
+        type = types.port;
+        default = 10992;
+      };
+
       settings = mkOption {
         type = toml.type;
         description = "Settings for the proxy.";
@@ -119,6 +124,17 @@ in
           ListenStream = "/run/fr.gouv.portail.Control";
           PassCredentials = true;
           FileDescriptorName = "control";
+        };
+
+        wantedBy = [ "sockets.target" ];
+      };
+      portail-metrics = {
+        description = "Portail metrics sockets";
+        socketConfig = {
+          Service = "portail.service";
+          Accept = "no";
+          ListenStream = "127.0.0.1:${toString cfg.metricsPort}";
+          FileDescriptorName = "metrics";
         };
 
         wantedBy = [ "sockets.target" ];

@@ -1,5 +1,7 @@
 use std::{fmt::Display, net::SocketAddr};
 
+use tokio::time::Instant;
+
 #[allow(clippy::large_enum_variant)]
 pub enum InboundStream {
     TcpStream(tokio::net::TcpStream),
@@ -60,6 +62,7 @@ pub struct OwnedRequestContext {
     pub trace_id: uuid::Uuid,
     pub client_address: SocketAddr,
     pub acl_ctx: crate::acl::OwnedEvaluationContext,
+    pub creation_time: Instant,
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +80,7 @@ impl OwnedRequestContext {
             client_address,
             trace_id: uuid::Uuid::new_v4(),
             acl_ctx: crate::acl::OwnedEvaluationContext::empty(),
+            creation_time: Instant::now(),
         }
     }
 

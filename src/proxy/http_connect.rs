@@ -2,6 +2,7 @@ use crate::acl::ACLRules;
 use crate::config::KnownBackend;
 use crate::proxy::context::{LocalRequestContext, OwnedRequestContext};
 use crate::proxy::protocol_detect::{ALPN_H2, ALPN_HTTP1_1};
+use crate::proxy::{ACL_EVALUATION_TIMES, DIRECT_EXIT_TOTAL, UPSTREAMS_HEALTH, UPSTREAMS_LATENCY};
 use crate::{
     config::{BackendSettings, Settings},
     proxy::{ProxyError, client_tls},
@@ -64,6 +65,10 @@ fn assess_request(
         }
     };
 
+    ACL_EVALUATION_TIMES
+        .with_label_values(&[assessment.action.to_label()])
+        .observe(start.elapsed().as_secs_f64());
+
     match assessment.action {
         // FIXME: render the deny template if there's one.
         crate::acl::Action::Deny(_explain_template) => {
@@ -72,6 +77,7 @@ fn assess_request(
                 duration_us = start.elapsed().as_micros(),
                 "Request denied by ACL",
             );
+
             let mut resp = Response::new(empty_body());
             *resp.status_mut() = StatusCode::FORBIDDEN;
 
@@ -333,6 +339,13 @@ async fn handle_http_request(
                 .await
                 {
                     Ok(Ok(upstream)) => {
+                        UPSTREAMS_LATENCY
+                            .with_label_values(&[backend.target_address.to_string()])
+                            .observe(start.elapsed().as_secs_f64());
+                        UPSTREAMS_HEALTH
+                            .with_label_values(&[backend.target_address.to_string()])
+                            .set(1);
+
                         info!(
                             subsystem = "proxy_access",
                             address = %final_address,
@@ -367,6 +380,9 @@ async fn handle_http_request(
                         }
                     }
                     Ok(Err(UpstreamConnectError::IO(err))) => {
+                        UPSTREAMS_HEALTH
+                            .with_label_values(&[backend.target_address.to_string()])
+                            .set(0);
                         info!(
                             subsystem = "proxy_access",
                             backend = ?backend,
@@ -376,6 +392,9 @@ async fn handle_http_request(
                         );
                     }
                     Err(_) => {
+                        UPSTREAMS_HEALTH
+                            .with_label_values(&[backend.target_address.to_string()])
+                            .set(0);
                         info!(
                             subsystem = "proxy_access",
                             backend = ?backend,
@@ -424,6 +443,7 @@ async fn handle_http_request(
                     duration_ms = start.elapsed().as_millis(),
                     "Stream directly established to final address (local exit)"
                 );
+                DIRECT_EXIT_TOTAL.with_label_values(&["http"]).inc();
                 stream = Some(Box::new(socket))
             }
             Ok(Err(e)) => warn!(

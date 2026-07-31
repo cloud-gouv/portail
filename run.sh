@@ -1,1 +1,1 @@
-cargo build; systemd-socket-activate --now --fdname proxy:control -E RUST_LOG=debug --listen 127.0.0.1:8000 --listen $(pwd)/fr.gouv.portail.Control ./target/debug/portail daemon --config ./config.toml
+cargo build; systemd-socket-activate --now --fdname proxy:control:metrics -E RUST_LOG=debug --listen [::1]:8000 --listen $(pwd)/fr.gouv.portail.Control --listen $(pwd)/fr.gouv.portail.Metrics ./target/debug/portail daemon --config ./config.toml

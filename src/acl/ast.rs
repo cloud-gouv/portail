@@ -47,6 +47,16 @@ pub enum Action {
     Redirect(Uri),
 }
 
+impl Action {
+    pub fn to_label(&self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::Deny(_) => "deny",
+            Self::Redirect(_) => "redirect",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Expression {
     Or(Box<Expression>, Box<Expression>),

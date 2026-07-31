@@ -13,6 +13,7 @@ use crate::systemd::sd_notify_ready;
 mod acl;
 mod config;
 mod logging;
+mod metrics;
 mod proxy;
 mod rpc;
 mod state;
@@ -94,6 +95,8 @@ enum Commands {
         #[arg(long, value_name = "ADDRESS")]
         /// Address to bind the proxy to when the daemon must create the socket itself
         bind_proxy_address: Option<String>,
+        #[arg(long, value_name = "ADDRESS")]
+        bind_metrics_address: Option<String>,
         #[arg(long, value_name = "FILE")]
         /// Path where to create the RPC socket if the daemon must create it itself
         bind_rpc_socket: Option<String>,
@@ -270,6 +273,7 @@ async fn main() -> Result<()> {
         Commands::Daemon {
             config,
             bind_proxy_address,
+            bind_metrics_address,
             bind_rpc_socket,
             log_preset,
         } => {
@@ -309,11 +313,24 @@ async fn main() -> Result<()> {
                 tokio::net::UnixListener::from_std(std)?
             };
 
+            let metrics_listener = if let Some(metrics_address) = bind_metrics_address {
+                tokio::net::TcpListener::bind(metrics_address).await?
+            } else {
+                let metrics_fd = fds_named
+                    .get("metrics")
+                    .ok_or_else(|| anyhow::anyhow!("missing metrics socket fd"))?;
+
+                let std = unsafe { std::net::TcpListener::from_raw_fd(*metrics_fd) };
+                std.set_nonblocking(true)?;
+                tokio::net::TcpListener::from_std(std)?
+            };
+
             info!("Starting services");
 
-            let (proxy_fut, rpc_fut) = (
+            let (proxy_fut, rpc_fut, metrics_fut) = (
                 proxy::start(settings.clone(), state.clone(), tcp_listener),
                 rpc::start(settings.clone(), state.clone(), rpc_listener),
+                metrics::serve(settings.clone(), state.clone(), metrics_listener),
             );
 
             if let Err(e) = sd_notify_ready() {
@@ -324,7 +341,7 @@ async fn main() -> Result<()> {
 
             info!("Services are ready.");
 
-            tokio::try_join!(proxy_fut, rpc_fut)?;
+            tokio::try_join!(proxy_fut, rpc_fut, metrics_fut)?;
 
             info!("Exiting...");
         }

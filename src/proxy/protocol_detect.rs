@@ -7,11 +7,23 @@ const H2_PREFACE: &[u8; 24] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 pub const ALPN_H2: &[u8] = b"h2";
 pub const ALPN_HTTP1_1: &[u8] = b"http/1.1";
 
+#[derive(Debug, Clone, Copy)]
 pub enum DetectedProtocol {
     Socks5,
     Http1,
     Http2,
     Unknown,
+}
+
+impl DetectedProtocol {
+    pub fn as_label(&self) -> &'static str {
+        match self {
+            Self::Socks5 => "socks5",
+            Self::Http1 => "http1",
+            Self::Http2 => "http2",
+            _ => "unknown",
+        }
+    }
 }
 
 /// We use a different approach than `hyper-util` because we have access to the TLS session. We therefore use the following order to detect the protocol:
