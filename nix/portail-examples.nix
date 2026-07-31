@@ -18,6 +18,8 @@ rustPlatform.buildRustPackage {
   cargoBuildFlags = [
     "--example"
     "h2_proxy_multiplex"
+    "--example"
+    "socks5_udp"
   ];
 
   doCheck = false;
@@ -27,13 +29,15 @@ rustPlatform.buildRustPackage {
   installPhase = ''
     runHook preInstall
     mkdir -p "$out/bin"
-    binary=$(find target -path '*/release/examples/h2_proxy_multiplex' -type f -print -quit)
-    if [ -z "$binary" ]; then
-      echo "h2_proxy_multiplex not found under target/" >&2
-      find target -type f || true
-      exit 1
-    fi
-    install -Dm755 "$binary" "$out/bin/h2-proxy-multiplex"
+    for example in h2_proxy_multiplex socks5_udp; do
+      binary=$(find target -path "*/release/examples/$example" -type f -print -quit)
+      if [ -z "$binary" ]; then
+        echo "$example not found under target/" >&2
+        find target -type f || true
+        exit 1
+      fi
+      install -Dm755 "$binary" "$out/bin/$(echo "$example" | tr '_' '-')"
+    done
     runHook postInstall
   '';
 
