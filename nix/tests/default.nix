@@ -926,10 +926,7 @@ in
 
           services.dnsmasq = {
             enable = true;
-            #resolveLocalQueries = false;
             settings = {
-              #interface = [ "eth1" ];
-              #bind-interfaces = true;
               listen-address = [ dnsServerIp ];
               address = [ "/${helloDomain}/${corpServerIp}" ];
             };

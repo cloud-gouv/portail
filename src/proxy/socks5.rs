@@ -20,7 +20,7 @@ use tracing::{debug, info, warn};
 use crate::{
     acl::ACLRules,
     config::{BackendSettings, KnownBackend},
-    dns::{DnsError, DnsResolver},
+    dns::{DnsError, HappyEyeballsError, happy_eyeballs_connect},
     proxy::{
         ProxyRuntime,
         context::{LocalRequestContext, OwnedRequestContext, TargetContext},
@@ -382,32 +382,62 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
         let start = Instant::now();
         match (cmd, rt.settings.public_address) {
             (Socks5Command::TCPConnect, _) => {
-                let resolved_target = resolve(&rt.dns, final_addr, start).await?;
-                debug!(
-                    subsystem = "proxy_access",
-                    target_addr = %resolved_target,
-                    duration_ms = start.elapsed().as_millis(),
-                    "SOCKS5 direct exit target address resolved"
-                );
-
-                // TODO: run_tcp_proxy only tries one address.
-                fast_socks5::server::run_tcp_proxy(
-                    proto,
-                    &TargetAddr::Ip(resolved_target),
+                let (host, port) = final_addr.into_string_and_port();
+                let (stream, resolved_addr) = happy_eyeballs_connect(
+                    &rt.dns,
+                    &host,
+                    port,
                     rt.settings.request_timeout,
                     rt.settings.tcp_nodelay,
                 )
-                .await?;
+                .await
+                .map_err(|err| {
+                    warn!(
+                        subsystem = "proxy_errors",
+                        host = %host,
+                        port = %port,
+                        duration_ms = start.elapsed().as_millis(),
+                        "SOCKS5 Happy Eyeballs connection failed: {err}",
+                    );
+                    match err {
+                        HappyEyeballsError::Dns(dns_err) => match dns_err {
+                            DnsError::LookupFailed { source, .. } => {
+                                SocksError::AddrError(AddrError::DNSResolutionFailed(source))
+                            }
+                            DnsError::TimedOut { .. } => SocksError::AddrError(
+                                AddrError::DNSResolutionFailed(std::io::Error::other(dns_err)),
+                            ),
+                            DnsError::NoRecords { .. } => {
+                                SocksError::AddrError(AddrError::NoDNSRecords)
+                            }
+                        },
+                        HappyEyeballsError::AllFailed { .. }
+                        | HappyEyeballsError::NoAddresses { .. } => {
+                            SocksError::ReplyError(ReplyError::HostUnreachable)
+                        }
+                    }
+                })?;
+
+                debug!(
+                    subsystem = "proxy_access",
+                    target_addr = %resolved_addr,
+                    duration_ms = start.elapsed().as_millis(),
+                    "SOCKS5 Happy Eyeballs connection established"
+                );
+
+                let inner = proto
+                    .reply_success(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0))
+                    .await?;
+                fast_socks5::server::transfer(inner, stream).await;
             }
 
             // TODO: enable with ACL rules evaluation
             // (Socks5Command::UDPAssociate, Some(public_address)) => {
-                // TODO: fast_socks5 does its own DNS resolution on each UDP packet using the system resolver.
-                // https://github.com/dizda/fast-socks5/blob/acb847616ec44b6c2d6cdaddeba090d18c6c5d5c/src/server.rs#L1245
+            // TODO: fast_socks5 does its own DNS resolution on each UDP packet using the system resolver.
+            // https://github.com/dizda/fast-socks5/blob/acb847616ec44b6c2d6cdaddeba090d18c6c5d5c/src/server.rs#L1245
             //    fast_socks5::server::run_udp_proxy(proto, &final_addr, None, public_address, None)
             //        .await?;
             //}
-
             _ => {
                 proto.reply_error(&ReplyError::CommandNotSupported).await?;
                 return Err(ReplyError::CommandNotSupported.into());
@@ -421,52 +451,4 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
     }
 
     Ok(())
-}
-
-async fn resolve(
-    dns: &DnsResolver,
-    target: TargetAddr,
-    start: Instant,
-) -> Result<SocketAddr, SocksError> {
-    match target {
-        TargetAddr::Ip(addr) => Ok(addr),
-        TargetAddr::Domain(host, port) => match dns.lookup(&host).await {
-            Ok(ips) => {
-                let ip = ips
-                    .into_iter()
-                    .next()
-                    .expect("Broken invariant: lookup returns at least one address");
-                let resolved_target = SocketAddr::new(ip, port);
-                debug!(
-                    subsystem = "proxy_access",
-                    host = %host,
-                    port = %port,
-                    resolved_target = %resolved_target,
-                    duration_ms = start.elapsed().as_millis(),
-                    "SOCKS5 DNS resolution successful",
-                );
-                Ok(resolved_target)
-            }
-            Err(err) => {
-                warn!(
-                    subsystem = "proxy_errors",
-                    host = %host,
-                    port = %port,
-                    duration_ms = start.elapsed().as_millis(),
-                    "SOCKS5 DNS resolution failed: {err}",
-                );
-                match err {
-                    DnsError::LookupFailed { source, .. } => Err(SocksError::AddrError(
-                        AddrError::DNSResolutionFailed(source),
-                    )),
-                    DnsError::TimedOut { .. } => Err(SocksError::AddrError(
-                        AddrError::DNSResolutionFailed(std::io::Error::other(err)),
-                    )),
-                    DnsError::NoRecords { .. } => {
-                        Err(SocksError::AddrError(AddrError::NoDNSRecords))
-                    }
-                }
-            }
-        },
-    }
 }

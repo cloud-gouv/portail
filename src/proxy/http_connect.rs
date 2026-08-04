@@ -1,7 +1,7 @@
 use crate::acl::ACLRules;
 use crate::config::BackendSettings;
 use crate::config::KnownBackend;
-use crate::proxy::connect_tcp;
+use crate::dns::happy_eyeballs_connect;
 use crate::proxy::context::{LocalRequestContext, OwnedRequestContext};
 use crate::proxy::protocol_detect::{ALPN_H2, ALPN_HTTP1_1};
 use crate::proxy::{ProxyError, ProxyRuntime, client_tls};
@@ -428,50 +428,31 @@ async fn handle_http_request(
             }
         };
 
-        let port = authority.port_u16().unwrap_or(default_port);
-        let ips = match rt.dns.lookup(authority.host()).await {
-            Ok(ips) => {
-                debug!(
-                    subsystem = "proxy_access",
-                    host = %authority.host(),
-                    port = %port,
-                    address_count = ips.len(),
-                    duration_ms = start.elapsed().as_millis(),
-                    "HTTP CONNECT DNS resolution successful",
-                );
-                ips
-            }
-            Err(err) => {
-                warn!(
-                    subsystem = "proxy_errors",
-                    address = %final_address,
-                    duration_ms = start.elapsed().as_millis(),
-                    "Direct connection DNS resolution failed: {err}",
-                );
-                let mut resp = Response::new(empty_body());
-                *resp.status_mut() = StatusCode::BAD_GATEWAY;
-                return Ok(resp);
-            }
-        };
-
-        match connect_tcp(&ips, port, rt.settings.request_timeout).await {
+        match happy_eyeballs_connect(
+            &rt.dns,
+            authority.host(),
+            port,
+            rt.settings.request_timeout,
+            rt.settings.tcp_nodelay,
+        )
+        .await
+        {
             Ok((socket, resolved_target)) => {
                 info!(
                     subsystem = "proxy_access",
                     address = %final_address,
                     resolved_target = %resolved_target,
                     duration_ms = start.elapsed().as_millis(),
-                    "Stream directly established to final address (local exit)"
+                    "Stream directly established to final address via Happy Eyeballs (local exit)"
                 );
                 stream = Some(Box::new(socket))
             }
-            Err(e) => warn!(
+            Err(err) => warn!(
                 subsystem = "proxy_errors",
                 address = %final_address,
                 duration_ms = start.elapsed().as_millis(),
                 configured_timeout_ms = rt.settings.request_timeout.as_millis(),
-                "Direct connection failed: {}",
-                e
+                "Direct connection via Happy Eyeballs failed: {err}",
             ),
         }
     }
