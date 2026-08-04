@@ -1,11 +1,8 @@
 use anyhow::bail;
 use fast_socks5::SocksError;
-use std::io;
-use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::time::Duration;
 use thiserror::Error;
-use tokio::{net::TcpStream, sync::RwLock, time::timeout};
+use tokio::{net::TcpStream, sync::RwLock};
 use tokio_rustls::{
     TlsAcceptor, TlsStream,
     rustls::{
@@ -212,31 +209,4 @@ pub async fn start(rt: Arc<ProxyRuntime>, listener: tokio::net::TcpListener) -> 
         let ctx = OwnedRequestContext::new(addr);
         accept_client(rt.clone(), socket, tls_acceptor.clone(), ctx).await;
     }
-}
-
-/// Tries each address in order.
-pub(crate) async fn connect_tcp(
-    ips: &[IpAddr],
-    port: u16,
-    connect_timeout: Duration,
-) -> io::Result<(TcpStream, SocketAddr)> {
-    let per_addr_timeout = connect_timeout
-        .checked_div(ips.len().max(1) as u32)
-        .unwrap_or(connect_timeout);
-    let mut last_err = None;
-
-    for &ip in ips {
-        let addr = SocketAddr::new(ip, port);
-        match timeout(per_addr_timeout, TcpStream::connect(addr)).await {
-            Ok(Ok(stream)) => return Ok((stream, addr)),
-            Ok(Err(err)) => last_err = Some(err),
-            Err(err) => {
-                last_err = Some(io::Error::new(io::ErrorKind::TimedOut, err));
-            }
-        }
-    }
-
-    Err(last_err.unwrap_or_else(|| {
-        io::Error::new(io::ErrorKind::NotConnected, "no addresses to connect to")
-    }))
 }
