@@ -1,0 +1,110 @@
+<script>
+(function() {
+  // Portail ACL language grammar, a simple one.
+  function grammar(hljs) {
+    return {
+      name: "Portail",
+      case_insensitive: false,
+      keywords: "policy route when require action use allow deny redirect true false and or not",
+      contains: [
+        hljs.COMMENT("#", "$"),
+        { className: "string",   begin: /"/, end: /"/, contains: [hljs.BACKSLASH_ESCAPE] },
+        { className: "variable", begin: /\b(route\.local|proxy\.(protocol|cmd)|host|port|path|query|method|scheme)\b/ },
+        { className: "params",   begin: /\[/, end: /\]/, contains: [
+            { className: "string", begin: /"/, end: /"/, contains: [hljs.BACKSLASH_ESCAPE] },
+        ]},
+        { className: "operator", begin: /==|!=|=~|\bin\b/ },
+        hljs.NUMBER_MODE,
+      ],
+    };
+  }
+
+  function registerAndFix() {
+    if (!window.hljs) return;
+    window.hljs.registerLanguage("portail", grammar);
+    document.querySelectorAll('pre code.language-portail').forEach(function(el) {
+      if (el.classList.contains('hljs')) {
+        el.classList.remove('hljs');
+        el.removeAttribute('data-highlighted');
+      }
+      var raw = el.textContent;
+      el.innerHTML = raw;
+      window.hljs.highlightBlock(el);
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', registerAndFix);
+  } else {
+    registerAndFix();
+  }
+})();
+</script>
+
+<style>
+.language-switcher {
+    display: flex;
+    gap: 0.25rem;
+    align-items: center;
+    margin-right: 0.75rem;
+}
+.language-switcher a {
+    text-decoration: none;
+    padding: 0.15rem 0.4rem;
+    border-radius: 3px;
+    color: var(--fg);
+    opacity: 0.7;
+    font-size: 0.85rem;
+    transition: opacity 0.15s;
+}
+.language-switcher a.active {
+    opacity: 1;
+    font-weight: 600;
+    background: var(--theme-hover);
+}
+.language-switcher a:hover {
+    opacity: 1;
+}
+.language-switcher .sep {
+    opacity: 0.3;
+    cursor: default;
+}
+
+/* Wide tables: let content wrap instead of forcing scroll */
+.content table {
+    display: table;
+    width: 100%;
+    table-layout: auto;
+}
+.content table th,
+.content table td {
+    white-space: normal;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    padding: 0.5rem 0.75rem;
+    vertical-align: top;
+}
+.content table code {
+    white-space: normal;
+    word-break: break-all;
+}
+</style>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const path = window.location.pathname;
+    // TODO: support multiple roots and autodetection based on the language.
+    const root = "/portail/docs";
+    const isEn = path.includes('/en/');
+    const isFr = path.includes('/fr/');
+    const switcher = document.createElement('span');
+    switcher.className = 'language-switcher';
+    switcher.innerHTML =
+        `<a href="${root}/en/"` + (isEn ? ' class="active"' : '') + '>EN</a>' +
+        '<span class="sep">&middot;</span>' +
+        `<a href="${root}/fr/"` + (isFr ? ' class="active"' : '') + '>FR</a>';
+    const rightButtons = document.querySelector('.right-buttons');
+    if (rightButtons) {
+        rightButtons.insertBefore(switcher, rightButtons.firstChild);
+    }
+});
+</script>
