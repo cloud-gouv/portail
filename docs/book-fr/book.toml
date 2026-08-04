@@ -1,0 +1,18 @@
+[book]
+authors = ["Contributeurs de Portail"]
+language = "fr"
+src = "../src/fr"
+title = "Documentation de Portail"
+
+[output.html]
+theme = "../theme"
+site-url = "/portail/docs/fr/"
+git-repository-url = "https://github.com/cloud-gouv/portail"
+edit-url-template = "https://github.com/cloud-gouv/portail/edit/main/docs/src/fr/{path}"
+
+[output.html.print]
+enable = true
+
+[output.html.fold]
+enable = true
+level = 2
