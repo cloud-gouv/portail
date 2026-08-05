@@ -200,8 +200,27 @@ async fn handle_http_request(
         return Ok(resp);
     };
 
-    let target_address = target_authority.to_string();
-    let mut final_address = target_address.clone();
+    // Reject non-authority-form CONNECT targets.
+    // Absolute form (https://host:port/path) lets the client control the scheme, path and query
+    // that ACL sees. But those are not accurate. They do not constrain the actual tunnel.
+    // Per RFC 7231, §4.3.6, CONNECT targets MUST use authority-form.
+
+    if req.uri().scheme().is_some() {
+        error!(
+            subsystem = "proxy_errors",
+            uri = %req.uri(),
+            "Rejected absolute-form CONNECT target"
+        );
+        let mut resp = Response::new(empty_body());
+        *resp.status_mut() = StatusCode::BAD_REQUEST;
+        return Ok(resp);
+    }
+
+    // We decided the default port for CONNECT is 443.
+    const CONNECT_DEFAULT_PORT: u16 = 443;
+
+    let port = target_authority.port_u16().unwrap_or(CONNECT_DEFAULT_PORT);
+    let mut final_address = format!("{}:{}", target_authority.host(), port);
     let mut backends: Vec<BackendSettings> = Vec::with_capacity(1);
     let backend_specs = &state.read().await.backends;
     debug!(subsystem = "proxy_access", final_address = %final_address,
@@ -209,21 +228,14 @@ async fn handle_http_request(
     // We evaluate first whether we are allowed then we evaluate routes.
     let acl = &state.read().await.acl_rules;
 
-    let default_port = match req.uri().scheme_str().unwrap_or("http") {
-        "http" => 80,
-        "https" => 443,
-        _ => 80,
-    };
-
     ctx.acl_ctx.insert(
         "host",
         crate::acl::ast::ConcreteOperand::String(target_authority.host()),
     );
+
     ctx.acl_ctx.insert(
         "port",
-        crate::acl::ast::ConcreteOperand::Number(
-            target_authority.port_u16().unwrap_or(default_port).into(),
-        ),
+        crate::acl::ast::ConcreteOperand::Number(port.into()),
     );
     ctx.acl_ctx.insert(
         "path",
