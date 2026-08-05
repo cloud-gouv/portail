@@ -159,6 +159,8 @@ in
         RuntimeDirectory = "portail";
         StateDirectory = "portail";
         LogsDirectory = "portail";
+
+        LimitNOFILE = 130672;
       };
     };
   };

@@ -320,10 +320,19 @@ async fn main() -> Result<()> {
                 tokio::net::UnixListener::from_std(std)?
             };
 
+            let effective_max_conn = config::effective_max_connections(settings.max_connections);
+            if effective_max_conn < settings.max_connections {
+                tracing::warn!(
+                    "Configuration sets max connections at {} but system limits puts it effectively at {}. Increase LimitNORFILE on systemd or RLIMIT_NOFILE using ulimit.",
+                    settings.max_connections,
+                    effective_max_conn
+                );
+            }
+
             info!("Starting services");
 
             let (proxy_fut, rpc_fut) = (
-                proxy::start(proxy_rt, tcp_listener),
+                proxy::start(proxy_rt, tcp_listener, effective_max_conn),
                 rpc::start(settings.clone(), state.clone(), rpc_listener),
             );
 
