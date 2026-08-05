@@ -1,8 +1,11 @@
 use anyhow::bail;
 use fast_socks5::SocksError;
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 use thiserror::Error;
-use tokio::{net::TcpStream, sync::RwLock};
+use tokio::{
+    net::TcpStream,
+    sync::{RwLock, Semaphore},
+};
 use tokio_rustls::{
     TlsAcceptor, TlsStream,
     rustls::{
@@ -138,6 +141,7 @@ pub async fn accept_client(
     socket: TcpStream,
     tls_acceptor: Option<TlsAcceptor>,
     ctx: OwnedRequestContext,
+    permit: tokio::sync::OwnedSemaphorePermit,
 ) {
     debug!(subsystem = "proxy_access", "Accepting a proxy connection");
 
@@ -146,6 +150,8 @@ pub async fn accept_client(
 
     tokio::spawn(
         async move {
+            // The permit is dropped when the spawned task completes.
+            let _permit = permit;
             match detect_tls(&socket).await {
                 Ok(true) => {
                     debug!(subsystem = "proxy_access", "TLS detected");
@@ -200,13 +206,57 @@ pub async fn accept_client(
     );
 }
 
-pub async fn start(rt: Arc<ProxyRuntime>, listener: tokio::net::TcpListener) -> anyhow::Result<()> {
+pub async fn start(
+    rt: Arc<ProxyRuntime>,
+    listener: tokio::net::TcpListener,
+    max_connections: usize,
+) -> anyhow::Result<()> {
+    use nix::errno::Errno;
+    use std::io::ErrorKind;
     let tls_acceptor: Option<TlsAcceptor> =
         build_tls_acceptor(&rt.settings, rt.state.clone()).await?;
 
+    let conn_semaphore = Arc::new(Semaphore::new(max_connections.min(Semaphore::MAX_PERMITS)));
+
     loop {
-        let (socket, addr) = listener.accept().await?;
+        let (socket, addr) = match listener.accept().await {
+            Ok(conn) => conn,
+            Err(e) => {
+                if e.raw_os_error() as Option<i32> == Some(Errno::EMFILE as i32)
+                    || e.raw_os_error() as Option<i32> == Some(Errno::ENFILE as i32)
+                    || e.kind() == ErrorKind::ConnectionAborted
+                    || e.kind() == ErrorKind::Interrupted
+                {
+                    error!(
+                        subsystem = "proxy_errors",
+                        "Transient accept error, backing off: {e}"
+                    );
+
+                    // Give 100ms until you terminate the client connection.
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+
+                    // This is non fatal.
+                    continue;
+                }
+                return Err(e.into());
+            }
+        };
+
+        let permit = match conn_semaphore.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                error!(
+                    subsystem = "proxy_errors",
+                    client_address = %addr,
+                    "Connection rejected: proxy at capacity ({max} concurrent connections)",
+                    max = max_connections
+                );
+
+                continue;
+            }
+        };
+
         let ctx = OwnedRequestContext::new(addr);
-        accept_client(rt.clone(), socket, tls_acceptor.clone(), ctx).await;
+        accept_client(rt.clone(), socket, tls_acceptor.clone(), ctx, permit).await;
     }
 }

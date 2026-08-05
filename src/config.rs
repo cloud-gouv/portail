@@ -215,6 +215,43 @@ pub struct Settings {
     /// Settings for the local RPC (authorization).
     #[serde(default)]
     pub rpc: RPCSettings,
+
+    /// Maximum number of concurrent client connections to the proxy.
+    ///
+    /// When this limit is reached, new connections are rejected until slots free up.
+    /// This prevents unbounded file descriptor growth if RLIMIT_NOFILE is too high.
+    /// Defaults to the (RLIMIT_NOFILE soft limit - 32) / 2,
+    /// what we consider to be the effective max.
+    #[serde(default = "default_max_connections")]
+    pub max_connections: usize,
+}
+
+pub fn effective_max_connections(upper_bound: usize) -> usize {
+    use nix::sys::resource::{Resource, getrlimit};
+
+    // We approximate there's 32 FDs which are independent of any connections
+    // (logs, RPC socket, etc.)
+    const RESERVED_FDS: u64 = 32;
+
+    let (soft, _hard) = match getrlimit(Resource::RLIMIT_NOFILE) {
+        Ok(l) => l,
+        // Assume there's danger and the limit is very low.
+        Err(_) => {
+            tracing::warn!(
+                "Could not figure out the soft RLIMIT_NOFILE, Portail will cap the number of client connections to 16."
+            );
+            return upper_bound.min(16);
+        }
+    };
+
+    let available = soft.saturating_sub(RESERVED_FDS);
+    let fd_based = (available / 2) as usize;
+
+    fd_based.min(upper_bound)
+}
+
+pub fn default_max_connections() -> usize {
+    effective_max_connections(usize::MAX)
 }
 
 pub fn init(config_path: &Path) -> Settings {
