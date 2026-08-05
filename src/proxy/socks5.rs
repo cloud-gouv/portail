@@ -15,7 +15,7 @@ use tokio::{
     time::{Instant, timeout},
 };
 use tokio_rustls::TlsStream;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::{
     backend_routing::{self, ACLDecision, BackendOutcome},
@@ -23,7 +23,7 @@ use crate::{
     dns::{DnsError, HappyEyeballsError, happy_eyeballs_connect},
     proxy::{
         ProxyRuntime,
-        context::{OwnedRequestContext, TargetContext},
+        context::{OwnedRequestContext, TargetContext, normalize_host_for_acl},
     },
 };
 
@@ -173,13 +173,22 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
 
     let (host, port) = target_context.initial_target.clone().into_string_and_port();
 
+    let normalized_host =  if let Ok(host) = normalize_host_for_acl(&host) { host } else {
+        error!(
+            subsystem = "proxy_errors",
+            "Hostname cannot be normalized to ASCII, terminating connection"
+        );
+        proto.reply_error(&ReplyError::ConnectionNotAllowed).await?;
+        return Err(ReplyError::ConnectionNotAllowed.into());
+    };
+
     let mut ctx = ctx.as_local();
     ctx.acl_ctx.insert(
         "proxy.protocol",
         crate::acl::ast::ConcreteOperand::String("socks5"),
     );
     ctx.acl_ctx
-        .insert("host", crate::acl::ast::ConcreteOperand::String(&host));
+        .insert("host", crate::acl::ast::ConcreteOperand::String(&normalized_host));
     ctx.acl_ctx.insert(
         "port",
         crate::acl::ast::ConcreteOperand::Number(port.into()),
