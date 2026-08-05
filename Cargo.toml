@@ -40,6 +40,7 @@ tokio-util = "0.7.19"
 futures-util = "0.3.34"
 tokio-stream = "0.1.19"
 tr = "0.1.11"
+idna = "^1"
 
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }

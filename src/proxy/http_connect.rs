@@ -3,10 +3,12 @@ use crate::backend_routing::ACLDecision;
 use crate::backend_routing::BackendOutcome;
 use crate::config::KnownBackend;
 use crate::dns::happy_eyeballs_connect;
-use crate::proxy::context::OwnedRequestContext;
 use crate::proxy::protocols::{ALPN_H2, ALPN_HTTP1_1};
-use crate::proxy::{ProxyError, ProxyRuntime, client_tls};
-use crate::state::State;
+use crate::proxy::context::{OwnedRequestContext, normalize_host_for_acl};
+use crate::{
+    proxy::{ProxyError, ProxyRuntime, client_tls},
+    state::State,
+};
 use bytes::Bytes;
 use http::uri::Authority;
 use http_body_util::{BodyExt, Empty, combinators::BoxBody};
@@ -203,9 +205,20 @@ async fn handle_http_request(
     debug!(subsystem = "proxy_access", final_address = %final_address,
         "HTTP CONNECT request");
 
+    let normalized_host =  if let Ok(host) = normalize_host_for_acl(target_authority.host()) { host } else {
+        error!(
+            subsystem = "proxy_errors",
+            "Authority cannot be normalized to ASCII, terminating connection"
+        );
+
+        let mut resp = Response::new(empty_body());
+        *resp.status_mut() = StatusCode::BAD_REQUEST;
+        return Ok(resp);
+    };
+
     ctx.acl_ctx.insert(
         "host",
-        crate::acl::ast::ConcreteOperand::String(target_authority.host()),
+        crate::acl::ast::ConcreteOperand::String(&normalized_host),
     );
 
     ctx.acl_ctx.insert(
