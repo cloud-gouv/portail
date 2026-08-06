@@ -143,6 +143,10 @@ in
         # FileDescriptorStoreMax = 1000;
         # FileDescriptorStorePreserve = "yes";
 
+        # Ensure that Portail restarts in case of failures.
+        Restart = "on-failure";
+        RestartSec = "5s";
+
         PrivateTmp = true;
         PrivateIPC = true;
         ProtectKernelTunables = true;
