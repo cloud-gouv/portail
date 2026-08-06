@@ -16,7 +16,8 @@ use tokio_rustls::{
 use tracing::{Instrument, debug, error};
 
 use crate::{
-    config::Settings, dns::DnsResolver, proxy::context::OwnedRequestContext, state::State,
+    acl::ast::OwnedConcreteOperand, config::Settings, dns::DnsResolver,
+    proxy::context::OwnedRequestContext, state::State,
 };
 
 mod client_tls;
@@ -140,7 +141,7 @@ pub async fn accept_client(
     rt: Arc<ProxyRuntime>,
     socket: TcpStream,
     tls_acceptor: Option<TlsAcceptor>,
-    ctx: OwnedRequestContext,
+    mut ctx: OwnedRequestContext,
     permit: tokio::sync::OwnedSemaphorePermit,
 ) {
     debug!(subsystem = "proxy_access", "Accepting a proxy connection");
@@ -162,6 +163,14 @@ pub async fn accept_client(
                                     subsystem = "proxy_access",
                                     "Authenticated TLS stream (client certificates)"
                                 );
+
+                                ctx.acl_ctx.insert(
+                                    "client.auth".into(),
+                                    OwnedConcreteOperand::String("tls".into()),
+                                );
+
+                                // TODO: extract peer certificate identity information and add it
+                                // to the context.
                                 if let Err(e) = serve_authenticated_proxy(
                                     rt,
                                     ctx,
@@ -187,8 +196,14 @@ pub async fn accept_client(
                 Ok(false) => {
                     debug!(
                         subsystem = "proxy_access",
-                        "No TLS detected, serving unauthenticated requests",
+                        "No TLS detected, serving unauthenticated and plaintext requests",
                     );
+
+                    ctx.acl_ctx.insert(
+                        "client.auth".into(),
+                        OwnedConcreteOperand::String("none".into()),
+                    );
+
                     if let Err(e) = serve_unauthenticated_proxy(rt, ctx, socket).await {
                         error!(subsystem = "proxy_errors", "Proxy error: {e:?}");
                     }
