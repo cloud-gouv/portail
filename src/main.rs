@@ -5,6 +5,7 @@ use std::{path::PathBuf, sync::Arc};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
+use crate::acl::hir::AclContext;
 use crate::logging::LogPreset;
 use crate::rpc::fr_gouv_portail_control::{DynamicBackendSpec, GetCurrentBackendOutput};
 use crate::systemd::sd_notify_ready;
@@ -364,7 +365,7 @@ async fn main() -> Result<()> {
             )
             .into_owned();
             let settings: Arc<config::Settings> = Arc::new(config::init(&config));
-            match acl::load_rules_from_str(contents.as_str(), &settings) {
+            match acl::load_rules_from_str(contents.as_str(), &settings, AclContext::Filter) {
                 Ok(rules) => info!(
                     n_policies = %rules.hir.policies.len(),
                     n_routes = %rules.hir.routes.len(),

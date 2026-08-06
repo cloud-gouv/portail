@@ -13,7 +13,7 @@ use tokio_rustls::rustls::{
 };
 use tracing::{info, warn};
 
-use crate::config::{BackendSettings, Settings};
+use crate::{acl::hir::AclContext, config::{BackendSettings, Settings}};
 use thiserror::Error;
 
 pub struct ServerCertificates<'a> {
@@ -137,7 +137,7 @@ impl State {
     #[allow(dead_code)]
     pub fn reload_acl_rules(&mut self, settings: &Settings) {
         if let Some(ref acl_rules_path) = settings.filter_acl_rules_path {
-            let new_acl = crate::acl::load_rules_from_file(acl_rules_path, settings);
+            let new_acl = crate::acl::load_rules_from_file(acl_rules_path, settings, AclContext::Filter);
 
             match new_acl {
                 Ok(new_acl) => {
@@ -171,6 +171,7 @@ pub fn init(settings: &Settings) -> Result<State, InitError> {
                 .clone()
                 .ok_or(InitError::MissingACLFile)?,
             settings,
+            AclContext::Filter
         )?,
         root_store: None,
         client_cert_resolver: None,
