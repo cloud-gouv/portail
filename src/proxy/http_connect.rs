@@ -206,11 +206,24 @@ async fn handle_http_request(
     let port = target_authority.port_u16().unwrap_or(CONNECT_DEFAULT_PORT);
     let mut final_address = format!("{}:{}", target_authority.host(), port);
     let mut backends: Vec<BackendSettings> = Vec::with_capacity(1);
-    let backend_specs = &rt.state.read().await.backends;
+
+    // We evaluate first whether we are allowed then we evaluate routes.
+
+    // Clone ACL data out of the read lock and drop the guard immediately.
+    // If you hold the read guard across backend connects, it will starves RPC writers.
+
+    let (acl, backend_specs, default_backend_id) = {
+        let state_guard = rt.state.read().await;
+
+        (
+            state_guard.acl_rules.clone(),
+            state_guard.backends.clone(),
+            state_guard.default_backend.clone(),
+        )
+    };
+
     debug!(subsystem = "proxy_access", final_address = %final_address,
         "HTTP CONNECT request");
-    // We evaluate first whether we are allowed then we evaluate routes.
-    let acl = &rt.state.read().await.acl_rules;
 
     ctx.acl_ctx.insert(
         "host",
@@ -240,7 +253,7 @@ async fn handle_http_request(
 
     // TODO: how much header information should we render available?
 
-    let mut recommended_routes = match ctx.acl_ctx.evaluate_routes(backend_specs, &acl.hir) {
+    let mut recommended_routes = match ctx.acl_ctx.evaluate_routes(&backend_specs, &acl.hir) {
         Ok(routes) => routes,
         Err(failure) => {
             let mut resp = Response::new(empty_body());
@@ -258,13 +271,9 @@ async fn handle_http_request(
     }
 
     if backends.is_empty()
-        && let Some(ref backend_id) = rt.state.read().await.default_backend
+        && let Some(ref backend_id) = default_backend_id
     {
-        let backend = rt
-            .state
-            .read()
-            .await
-            .backends
+        let backend = backend_specs
             .get(backend_id)
             .unwrap_or_else(|| panic!("BUG: default backend {backend_id} went away from state"))
             .to_owned();
@@ -286,7 +295,7 @@ async fn handle_http_request(
         );
     }
 
-    match assess_request(start, target_authority, &ctx, acl)? {
+    match assess_request(start, target_authority, &ctx, &acl)? {
         Decision::TerminateWithResponse(resp) => return Ok(resp),
         Decision::RedirectDestination(target) => final_address = target,
         Decision::Continue => {}
@@ -393,7 +402,7 @@ async fn handle_http_request(
             crate::acl::ast::ConcreteOperand::Boolean(true),
         );
 
-        match assess_request(start, target_authority, &ctx, acl)? {
+        match assess_request(start, target_authority, &ctx, &acl)? {
             Decision::TerminateWithResponse(resp) => return Ok(resp),
             Decision::RedirectDestination(target) => final_address = target,
             _ => {}
