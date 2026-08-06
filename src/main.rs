@@ -19,6 +19,7 @@ mod proxy;
 mod rpc;
 mod state;
 mod systemd;
+mod templates;
 
 use rpc::fr_gouv_portail_control::Control;
 
