@@ -18,12 +18,12 @@ use tokio_rustls::TlsStream;
 use tracing::{debug, info, warn};
 
 use crate::{
-    acl::ACLRules,
-    config::{BackendSettings, KnownBackend},
+    backend_routing::{self, ACLDecision, BackendOutcome},
+    config::KnownBackend,
     dns::{DnsError, HappyEyeballsError, happy_eyeballs_connect},
     proxy::{
         ProxyRuntime,
-        context::{LocalRequestContext, OwnedRequestContext, TargetContext},
+        context::{OwnedRequestContext, TargetContext},
     },
 };
 
@@ -39,26 +39,15 @@ enum Decision {
     Continue,
 }
 
-fn assess_request(
+fn map_acl_decision(
+    decision: ACLDecision,
     start: Instant,
     target_context: &TargetContext,
-    ctx: &LocalRequestContext<'_>,
-    acl: &ACLRules,
 ) -> Result<Decision, fast_socks5::SocksError> {
-    let assessment = match ctx.acl_ctx.evaluate_request(&acl.hir) {
-        Ok(assessment) => assessment,
-        Err(failure) => {
-            warn!(
-                subsystem = "proxy_errors",
-                "Failed to evaluate a request: {} (Context: {:#?})", failure, ctx
-            );
-            return Ok(Decision::TerminateWithError(ReplyError::GeneralFailure));
-        }
-    };
+    match decision {
+        ACLDecision::InternalError => Ok(Decision::TerminateWithError(ReplyError::GeneralFailure)),
 
-    match assessment.action {
-        // FIXME: render the deny template if there's one.
-        crate::acl::Action::Deny(_explain_template) => {
+        ACLDecision::Deny => {
             info!(
                 subsystem = "proxy_access",
                 target_context = ?target_context,
@@ -70,7 +59,8 @@ fn assess_request(
                 ReplyError::ConnectionNotAllowed,
             ))
         }
-        crate::acl::Action::Redirect(target) => {
+
+        ACLDecision::Redirect(target) => {
             info!(
                 subsystem = "proxy_access",
                 target_context = ?target_context,
@@ -90,7 +80,7 @@ fn assess_request(
             )))
         }
 
-        _ => Ok(Decision::Continue),
+        ACLDecision::Allow => Ok(Decision::Continue),
     }
 }
 
@@ -228,72 +218,19 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
         "SOCKS5 command allowed"
     );
 
-    let mut backends: Vec<BackendSettings> = Vec::with_capacity(1);
-
-    // Clone ACL data out of the read lock and drop the guard immediately.
-    // If you hold the read guard across backend connects, it will starves RPC writers.
-
-    let (acl, backend_specs, default_backend_id) = {
-        let state_guard = rt.state.read().await;
-
-        (
-            state_guard.acl_rules.clone(),
-            state_guard.backends.clone(),
-            state_guard.default_backend.clone(),
-        )
-    };
-
-    // We evaluate first the routes as it can influence the ACL in case of a local exit.
-    let mut recommended_routes = match ctx.acl_ctx.evaluate_routes(&backend_specs, &acl.hir) {
-        Ok(routes) => routes,
-        Err(failure) => {
+    let (mut backends, acl) = match backend_routing::build_backend_chain(&rt, &mut ctx).await {
+        (Some(b), acl) => (b, acl),
+        (None, _) => {
             proto.reply_error(&ReplyError::GeneralFailure).await?;
-            warn!(
-                subsystem = "proxy_errors",
-                "Failed to evaluate routes for a request: {} (Context: {:#?})", failure, ctx
-            );
             return Ok(());
         }
     };
 
-    if !recommended_routes.is_empty() {
-        backends.append(&mut recommended_routes);
-    }
-
-    if backends.is_empty()
-        && let Some(ref backend_id) = default_backend_id
-    {
-        let backend = match backend_specs.get(backend_id) {
-            Some(b) => b.to_owned(),
-            None => {
-                warn!(
-                    subsystem = "proxy_errors",
-                    "Default backend {backend_id} not found in state, rejecting request",
-                );
-
-                proto.reply_error(&ReplyError::GeneralFailure).await?;
-                return Ok(());
-            }
-        };
-
-        backends.push(backend);
-    }
-
-    backends.reverse();
-
-    if backends.is_empty() {
-        ctx.acl_ctx.insert(
-            "route.local",
-            crate::acl::ast::ConcreteOperand::Boolean(true),
-        );
-    } else {
-        ctx.acl_ctx.insert(
-            "route.local",
-            crate::acl::ast::ConcreteOperand::Boolean(false),
-        );
-    }
-
-    match assess_request(start, &target_context, &ctx, &acl)? {
+    match map_acl_decision(
+        backend_routing::assess_request(&ctx, &acl),
+        start,
+        &target_context,
+    )? {
         Decision::TerminateWithError(error) => {
             proto.reply_error(&error).await?;
             return Ok(());
@@ -309,71 +246,44 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
     );
 
     let start = Instant::now();
-    // Either, we route to another backend or we do the SOCKS5 proxying ourselves.
-    while let Some(backend) = backends.pop() {
-        debug!(
-            subsystem = "proxy_access",
-            backend = ?backend,
-            duration_ms = start.elapsed().as_millis(),
-            "Backend selected for connection routing"
-        );
-        match backend {
-            BackendSettings::UnresolvedBackend => {
-                // TODO: keep the IDs to print them here.
-                tracing::error!(
-                    "An unresolved backend was selected during SOCKS5 routing. This should not happen, rejecting the request."
-                );
-                proto.reply_error(&ReplyError::GeneralFailure).await?;
-                return Ok(());
-            }
-            BackendSettings::KnownBackend(backend) => {
-                match timeout(
-                    rt.settings.connect_timeout,
-                    connect_to_backend(&backend, &final_addr, rt.clone()),
+    match backend_routing::try_backends(
+        &mut backends,
+        &final_addr.to_string(),
+        rt.settings.connect_timeout,
+        |backend, _target| {
+            let rt = Arc::clone(&rt);
+            let final_addr = final_addr.clone();
+            async move {
+                BackendOutcome::from_result_retry(
+                    connect_to_backend(&backend, &final_addr, rt).await,
                 )
-                .await
-                {
-                    Ok(Ok(stream)) => {
-                        debug!(
-                            subsystem = "proxy_access",
-                            backend = ?backend,
-                            duration_ms = start.elapsed().as_millis(),
-                            "Connection to upstream backend successful"
-                        );
-
-                        let start = Instant::now();
-
-                        route_to_backend(stream, proto).await?;
-
-                        debug!(
-                            subsystem = "proxy_access",
-                            duration_ms = start.elapsed().as_millis(),
-                            "SOCKS5 request finished"
-                        );
-
-                        return Ok(());
-                    }
-
-                    Ok(Err(err)) => {
-                        debug!(
-                            subsystem = "proxy_errors",
-                            backend = ?backend,
-                            "Backend failed to route the request: {err}, trying the next one",
-                        );
-
-                        continue;
-                    }
-
-                    Err(_) => {
-                        debug!(
-                            "Backend {} timed out after {:?}, trying the next one",
-                            &backend.target_address, rt.settings.connect_timeout
-                        );
-                        continue;
-                    }
-                }
             }
+        },
+    )
+    .await
+    {
+        Some(Ok((stream, _backend))) => {
+            let start = Instant::now();
+            route_to_backend(stream, proto).await?;
+            debug!(
+                subsystem = "proxy_access",
+                duration_ms = start.elapsed().as_millis(),
+                "SOCKS5 request finished"
+            );
+
+            return Ok(());
         }
+
+        Some(Err(err)) => {
+            warn!(
+                subsystem = "proxy_errors",
+                err = %err,
+                "BUG: SOCKS5 connection should never produces fatal outcomes"
+            );
+        }
+
+        // Move on to direct exit.
+        None => {}
     }
 
     // Direct exit: if we get there, this means that we did not have any backend at all.
@@ -386,11 +296,12 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
 
         let start = Instant::now();
 
-        ctx.acl_ctx.insert(
-            "route.local",
-            crate::acl::ast::ConcreteOperand::Boolean(true),
-        );
-        match assess_request(start, &target_context, &ctx, &acl)? {
+        backend_routing::mark_direct_exit(&mut ctx);
+        match map_acl_decision(
+            backend_routing::assess_request(&ctx, &acl),
+            start,
+            &target_context,
+        )? {
             Decision::TerminateWithError(error) => {
                 proto.reply_error(&error).await?;
                 return Ok(());
