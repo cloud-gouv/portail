@@ -218,11 +218,22 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
     );
 
     let mut backends: Vec<BackendSettings> = Vec::with_capacity(1);
-    let acl = &rt.state.read().await.acl_rules;
-    let backend_specs = &rt.state.read().await.backends;
+
+    // Clone ACL data out of the read lock and drop the guard immediately.
+    // If you hold the read guard across backend connects, it will starves RPC writers.
+
+    let (acl, backend_specs, default_backend_id) = {
+        let state_guard = rt.state.read().await;
+
+        (
+            state_guard.acl_rules.clone(),
+            state_guard.backends.clone(),
+            state_guard.default_backend.clone(),
+        )
+    };
 
     // We evaluate first the routes as it can influence the ACL in case of a local exit.
-    let mut recommended_routes = match ctx.acl_ctx.evaluate_routes(backend_specs, &acl.hir) {
+    let mut recommended_routes = match ctx.acl_ctx.evaluate_routes(&backend_specs, &acl.hir) {
         Ok(routes) => routes,
         Err(failure) => {
             proto.reply_error(&ReplyError::GeneralFailure).await?;
@@ -239,13 +250,9 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
     }
 
     if backends.is_empty()
-        && let Some(ref backend_id) = rt.state.read().await.default_backend
+        && let Some(ref backend_id) = default_backend_id
     {
-        let backend = rt
-            .state
-            .read()
-            .await
-            .backends
+        let backend = backend_specs
             .get(backend_id)
             .unwrap_or_else(|| panic!("BUG: default backend {backend_id} went away from state"))
             .to_owned();
@@ -267,7 +274,7 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
         );
     }
 
-    match assess_request(start, &target_context, &ctx, acl)? {
+    match assess_request(start, &target_context, &ctx, &acl)? {
         Decision::TerminateWithError(error) => {
             proto.reply_error(&error).await?;
             return Ok(());
@@ -364,7 +371,7 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
             "route.local",
             crate::acl::ast::ConcreteOperand::Boolean(true),
         );
-        match assess_request(start, &target_context, &ctx, acl)? {
+        match assess_request(start, &target_context, &ctx, &acl)? {
             Decision::TerminateWithError(error) => {
                 proto.reply_error(&error).await?;
                 return Ok(());
