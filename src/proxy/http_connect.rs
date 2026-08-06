@@ -104,8 +104,6 @@ pub async fn serve_http1_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
     debug!(subsystem = "proxy_access", "HTTP/1.1 CONNECT request");
     let io = TokioIo::new(stream);
 
-    // TODO: update ctx
-
     http1::Builder::new()
         .serve_connection(
             io,
@@ -128,9 +126,6 @@ pub async fn serve_http2_connect<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
 ) -> Result<(), ProxyError> {
     debug!(subsystem = "proxy_access", "HTTP/2 CONNECT request");
     let io = TokioIo::new(stream);
-
-    // TODO: update ctx
-    //
 
     // TokioExecutor is a wrapper around tokio::spawn
     // https://docs.rs/hyper-util/latest/src/hyper_util/rt/tokio.rs.html#112
@@ -168,6 +163,14 @@ async fn handle_http_request(
         *resp.status_mut() = StatusCode::METHOD_NOT_ALLOWED;
         return Ok(resp);
     }
+
+    ctx.acl_ctx.insert(
+        "http.version",
+        crate::acl::ast::ConcreteOperand::String(match inbound_protocol {
+            InboundHttpProtocol::Http1 => "h1.1",
+            InboundHttpProtocol::Http2 => "h2"
+        })
+    );
 
     ctx.acl_ctx.insert(
         "proxy.protocol",
