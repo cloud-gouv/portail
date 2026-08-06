@@ -32,7 +32,7 @@ impl<T: AsyncRead + AsyncWrite> OutboundStreamIo for T {}
 
 type OutboundStream = Box<dyn OutboundStreamIo + Send + Unpin>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 enum InboundHttpProtocol {
     Http1,
     Http2,
@@ -345,7 +345,7 @@ async fn handle_http_request(
                         &backend,
                         &final_address,
                         rt.state.clone(),
-                        &inbound_protocol,
+                        inbound_protocol,
                     ),
                 )
                 .await
@@ -563,7 +563,7 @@ async fn connect_to_http_proxy_backend(
     backend: &KnownBackend,
     final_address: &str,
     state: Arc<RwLock<State>>,
-    inbound_protocol: &InboundHttpProtocol,
+    inbound_protocol: InboundHttpProtocol,
 ) -> Result<OutboundStream, UpstreamConnectError> {
     let socket = TcpStream::connect(backend.target_address).await?;
 
