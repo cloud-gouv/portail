@@ -303,6 +303,9 @@ async fn main() -> Result<()> {
                     .get("proxy")
                     .ok_or_else(|| anyhow::anyhow!("missing tcp socket fd"))?;
 
+                // SAFETY: the FD is assumed to come from systemd's LISTEN_FDS protocol.
+                // See https://www.freedesktop.org/software/systemd/man/latest/sd_listen_fds.html.
+                // According to the packaging contract, it must be a TCP listener.
                 let std = unsafe { std::net::TcpListener::from_raw_fd(*tcp_fd) };
                 std.set_nonblocking(true)?;
                 tokio::net::TcpListener::from_std(std)?
@@ -315,6 +318,9 @@ async fn main() -> Result<()> {
                     .get("control")
                     .ok_or_else(|| anyhow::anyhow!("missing rpc socket fd"))?;
 
+                // SAFETY: the FD is assumed to come from systemd's LISTEN_FDS protocol.
+                // See https://www.freedesktop.org/software/systemd/man/latest/sd_listen_fds.html.
+                // According to the packaging contract, it must be a UNIX domain socket listener.
                 let std = unsafe { std::os::unix::net::UnixListener::from_raw_fd(*rpc_fd) };
                 std.set_nonblocking(true)?;
                 tokio::net::UnixListener::from_std(std)?
