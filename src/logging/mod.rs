@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs::OpenOptions, path::PathBuf};
+use std::{collections::HashMap, fs::OpenOptions, os::unix::fs::OpenOptionsExt, path::PathBuf};
 
 use anyhow::Context;
 use clap::ValueEnum;
@@ -344,7 +344,13 @@ fn create_layer_for_route(
         LogOutput::Stdout => tracing_appender::non_blocking(std::io::stdout()),
         LogOutput::Stderr => tracing_appender::non_blocking(std::io::stderr()),
         LogOutput::File(path) => {
-            let file = OpenOptions::new().append(true).create(true).open(path)?;
+            // Log files may contain all users' traffic destinations.
+            // It MUST never be world-readable.
+            let file = OpenOptions::new()
+                .append(true)
+                .create(true)
+                .mode(0o600)
+                .open(path)?;
             tracing_appender::non_blocking(file)
         }
         LogOutput::Journald => unimplemented!(),
