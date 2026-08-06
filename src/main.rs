@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use std::net::SocketAddr;
-use std::os::fd::FromRawFd;
 use std::{path::PathBuf, sync::Arc};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
@@ -294,19 +293,16 @@ async fn main() -> Result<()> {
 
             debug!("Loaded Portail settings and state");
 
-            let fds_named = systemd::listen_fds_named();
+            let mut fds_named = systemd::listen_fds_named();
 
             let tcp_listener = if let Some(proxy_address) = bind_proxy_address {
                 tokio::net::TcpListener::bind(proxy_address).await?
             } else {
                 let tcp_fd = fds_named
-                    .get("proxy")
+                    .remove("proxy")
                     .ok_or_else(|| anyhow::anyhow!("missing tcp socket fd"))?;
 
-                // SAFETY: the FD is assumed to come from systemd's LISTEN_FDS protocol.
-                // See https://www.freedesktop.org/software/systemd/man/latest/sd_listen_fds.html.
-                // According to the packaging contract, it must be a TCP listener.
-                let std = unsafe { std::net::TcpListener::from_raw_fd(*tcp_fd) };
+                let std: std::net::TcpListener = tcp_fd.into();
                 std.set_nonblocking(true)?;
                 tokio::net::TcpListener::from_std(std)?
             };
@@ -315,13 +311,10 @@ async fn main() -> Result<()> {
                 tokio::net::UnixListener::bind(rpc_socket)?
             } else {
                 let rpc_fd = fds_named
-                    .get("control")
+                    .remove("control")
                     .ok_or_else(|| anyhow::anyhow!("missing rpc socket fd"))?;
 
-                // SAFETY: the FD is assumed to come from systemd's LISTEN_FDS protocol.
-                // See https://www.freedesktop.org/software/systemd/man/latest/sd_listen_fds.html.
-                // According to the packaging contract, it must be a UNIX domain socket listener.
-                let std = unsafe { std::os::unix::net::UnixListener::from_raw_fd(*rpc_fd) };
+                let std: std::os::unix::net::UnixListener = rpc_fd.into();
                 std.set_nonblocking(true)?;
                 tokio::net::UnixListener::from_std(std)?
             };

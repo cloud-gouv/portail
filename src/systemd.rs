@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 use std::env;
-use std::os::fd::RawFd;
+use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::net::UnixDatagram;
 
 use thiserror::Error;
+use tracing::error;
 
 const SD_NOTIFY_SOCKET_PATH: &str = "/run/systemd/notify";
 const READY_MESSAGE: &str = "READY=1";
@@ -35,7 +36,9 @@ pub fn sd_notify_ready() -> Result<(), NotifyError> {
     sd_notify(READY_MESSAGE)
 }
 
-pub fn listen_fds_named() -> HashMap<String, RawFd> {
+pub fn listen_fds_named() -> HashMap<String, OwnedFd> {
+    use nix::sys::socket;
+
     let pid_ok = env::var("LISTEN_PID")
         .map(|v| v == std::process::id().to_string())
         .unwrap_or(false);
@@ -53,9 +56,23 @@ pub fn listen_fds_named() -> HashMap<String, RawFd> {
 
     let mut map = HashMap::new();
     for i in 0..n_fds {
-        let fd = 3 + i;
-        let default = format!("fd{}", fd);
+        // SAFETY: the FD is assumed to come from systemd's LISTEN_FDS protocol.
+        // See https://www.freedesktop.org/software/systemd/man/latest/sd_listen_fds.html.
+        let fd: OwnedFd = unsafe { OwnedFd::from_raw_fd(3 + i) };
+        let default = format!("fd{}", 3 + i);
         let name = names.get(i as usize).unwrap_or(&default);
+
+        // TODO: store also in the hashmap the type of the socket so that consumers can assert it.
+        if socket::getsockopt(&fd, socket::sockopt::SockType).is_err() {
+            error!(
+                fd = 3 + i,
+                name = name,
+                "systemd fd is not a socket, skipping"
+            );
+
+            continue;
+        }
+
         map.insert(name.clone(), fd);
     }
     map
