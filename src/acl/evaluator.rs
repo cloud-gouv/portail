@@ -83,12 +83,18 @@ pub struct RequestAssessment<'s> {
     redirect_require_contexts: Vec<RequireContext<'s>>,
 }
 
+/// Maximum expression nesting depth before evaluation is aborted.
+/// Prevents stack overflow from deeply nested or chained expressions.
+const MAX_EXPR_DEPTH: u32 = 256;
+
 #[derive(Debug, Error)]
 pub enum InterpretationError<'s> {
     #[error("Variable '{0}' is missing in the context")]
     MissingVariableInContext(Cow<'s, str>),
     #[error("Comparison error: '{0}'")]
     ComparisonError(ComparisonError<'s>),
+    #[error("Expression nesting depth exceeded ({0})")]
+    RecursionDepthExceeded(u32),
 }
 
 #[allow(clippy::result_large_err)]
@@ -137,15 +143,33 @@ impl<'s> EvaluationContext<'s> {
     }
 
     fn evaluate_expression(&self, expr: &'s Expression) -> Result<bool, InterpretationError<'s>> {
+        self.evaluate_depth_bounded_expression(expr, 0)
+    }
+
+    fn evaluate_depth_bounded_expression(
+        &self,
+        expr: &'s Expression,
+        depth: u32,
+    ) -> Result<bool, InterpretationError<'s>> {
+        if depth > MAX_EXPR_DEPTH {
+            return Err(InterpretationError::RecursionDepthExceeded(depth));
+        }
+
         Ok(match expr {
             Expression::Or(lhs, rhs) => {
-                self.evaluate_expression(lhs)? || self.evaluate_expression(rhs)?
+                self.evaluate_depth_bounded_expression(lhs, depth + 1)?
+                    || self.evaluate_depth_bounded_expression(rhs, depth + 1)?
             }
             Expression::And(lhs, rhs) => {
-                self.evaluate_expression(lhs)? && self.evaluate_expression(rhs)?
+                self.evaluate_depth_bounded_expression(lhs, depth + 1)?
+                    && self.evaluate_depth_bounded_expression(rhs, depth + 1)?
             }
-            Expression::Not(operand) => !self.evaluate_expression(operand)?,
-            Expression::Group(operand) => self.evaluate_expression(operand)?,
+            Expression::Not(operand) => {
+                !self.evaluate_depth_bounded_expression(operand, depth + 1)?
+            }
+            Expression::Group(operand) => {
+                self.evaluate_depth_bounded_expression(operand, depth + 1)?
+            }
             Expression::Comparison(lhs, comp, rhs) => {
                 let lhs: ConcreteOperand = self.concretize_operand(lhs)?;
                 let rhs: ConcreteOperand = self.concretize_operand(rhs)?;
