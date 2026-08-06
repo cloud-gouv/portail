@@ -2,16 +2,16 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use regex::Regex;
-use winnow::ModalResult;
 use winnow::ascii::{digit1, multispace1};
 use winnow::combinator::{alt, cut_err, dispatch, fail, opt, preceded, repeat, separated};
 use winnow::error::{
     ContextError, ErrMode, FromExternalError, ParseError, StrContext, StrContextValue,
 };
 use winnow::token::take;
+use winnow::ModalResult;
 use winnow::{
-    Parser, Result, ascii::multispace0, combinator::delimited, error::ParserError,
-    token::take_while,
+    ascii::multispace0, combinator::delimited, error::ParserError, token::take_while, Parser,
+    Result,
 };
 
 use crate::acl::ast::{
@@ -235,9 +235,11 @@ fn action_statement(input: &mut &str) -> ModalResult<Action> {
             ),
         )
         .map(|s| Action::Redirect(s.to_owned())),
+        preceded("explain", cut_err(preceded(multispace1, string_literal)))
+            .map(|s| Action::Explain(s.to_owned())),
         fail.context(StrContext::Label("action statement"))
             .context(StrContext::Expected(StrContextValue::Description(
-                "allow, deny [explain-template=] or redirect",
+                "allow, deny [explain-template=], redirect or explain",
             ))),
     ))
     .context(StrContext::Label("action statement"))
@@ -755,6 +757,21 @@ mod tests {
         let result = parse_into_ast(&mut input);
 
         assert_debug_snapshot!("valid_expression_precedence", result.unwrap());
+    }
+
+    #[test]
+    fn parse_valid_explain_action() {
+        let mut input = r#"
+            policy explain_policy {
+                when user.authenticated == true
+                action explain "deny-employee.html"
+            }
+        "#;
+
+        let rules = parse_into_ast(&mut input).unwrap();
+        assert_eq!(rules.entries.len(), 1);
+
+        assert_debug_snapshot!("explain_action", rules);
     }
 
     #[test]

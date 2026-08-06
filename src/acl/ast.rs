@@ -45,6 +45,8 @@ pub enum Action {
     Allow,
     Deny(Option<PathBuf>),
     Redirect(Uri),
+    /// Select a template for explanation (explain ACL only).
+    Explain(String),
 }
 
 #[derive(Debug, Clone)]
