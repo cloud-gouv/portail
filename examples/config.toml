@@ -1,5 +1,7 @@
 filter-acl-rules-path = "./filter.acl"
-request-timeout = 5
+# Timeouts (all in seconds, defaults shown)
+# handshake-timeout = 15  # Time before the initial bytes are sent.
+connect-timeout = 5 # TCP connect to backend/origin (was request-timeout)
 tcp_nodelay = false
 
 [backends.par01a]
@@ -23,3 +25,6 @@ tls-chain = "./fullchain.pem"
 cacert-file = "./cacert.pem"
 tls-privkey = "./client.key"
 tls-certificate = "./client.pem"
+
+[dns]
+# timeout = 5 # DNS resolution

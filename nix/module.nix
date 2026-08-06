@@ -94,7 +94,8 @@ in
 
     services.portail.settings = {
       filter-acl-rules-path = aclRulesFilePath;
-      request-timeout = mkDefault 30;
+      handshake-timeout = mkDefault 15;
+      connect-timeout = mkDefault 30;
       tcp-nodelay = mkDefault false;
       dns.timeout = mkDefault 5;
     };
