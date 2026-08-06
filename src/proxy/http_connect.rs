@@ -1,8 +1,9 @@
-use crate::acl::ACLRules;
-use crate::config::BackendSettings;
+use crate::backend_routing;
+use crate::backend_routing::ACLDecision;
+use crate::backend_routing::BackendOutcome;
 use crate::config::KnownBackend;
 use crate::dns::happy_eyeballs_connect;
-use crate::proxy::context::{LocalRequestContext, OwnedRequestContext};
+use crate::proxy::context::OwnedRequestContext;
 use crate::proxy::protocols::{ALPN_H2, ALPN_HTTP1_1};
 use crate::proxy::{ProxyError, ProxyRuntime, client_tls};
 use crate::state::State;
@@ -23,7 +24,7 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
-use tokio::time::{Instant, timeout};
+use tokio::time::Instant;
 use tracing::{Instrument, debug, error, info, warn};
 
 /// This is a workaround for the restriction `only auto traits can be used as additional traits in a trait object`
@@ -44,28 +45,18 @@ enum Decision {
     Continue,
 }
 
-fn assess_request(
+fn map_acl_decision(
+    decision: ACLDecision,
     start: Instant,
     target_authority: &Authority,
-    ctx: &LocalRequestContext<'_>,
-    acl: &ACLRules,
 ) -> Result<Decision, hyper::Error> {
-    let assessment = match ctx.acl_ctx.evaluate_request(&acl.hir) {
-        Ok(assessment) => assessment,
-        Err(failure) => {
+    match decision {
+        ACLDecision::InternalError => {
             let mut resp = Response::new(empty_body());
-            warn!(
-                subsystem = "proxy_errors",
-                "Failed to evaluate a request: {} (Context: {:#?})", failure, ctx
-            );
             *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-            return Ok(Decision::TerminateWithResponse(resp));
+            Ok(Decision::TerminateWithResponse(resp))
         }
-    };
-
-    match assessment.action {
-        // FIXME: render the deny template if there's one.
-        crate::acl::Action::Deny(_explain_template) => {
+        ACLDecision::Deny => {
             info!(
                 subsystem = "proxy_access",
                 duration_us = start.elapsed().as_micros(),
@@ -76,7 +67,7 @@ fn assess_request(
 
             Ok(Decision::TerminateWithResponse(resp))
         }
-        crate::acl::Action::Redirect(target) => {
+        ACLDecision::Redirect(target) => {
             info!(
                 subsystem = "proxy_access",
                 original_host = %target_authority.host(),
@@ -87,7 +78,7 @@ fn assess_request(
             Ok(Decision::RedirectDestination(target.to_string()))
         }
 
-        _ => Ok(Decision::Continue),
+        ACLDecision::Allow => Ok(Decision::Continue),
     }
 }
 
@@ -168,8 +159,8 @@ async fn handle_http_request(
         "http.version",
         crate::acl::ast::ConcreteOperand::String(match inbound_protocol {
             InboundHttpProtocol::Http1 => "h1.1",
-            InboundHttpProtocol::Http2 => "h2"
-        })
+            InboundHttpProtocol::Http2 => "h2",
+        }),
     );
 
     ctx.acl_ctx.insert(
@@ -208,22 +199,6 @@ async fn handle_http_request(
 
     let port = target_authority.port_u16().unwrap_or(CONNECT_DEFAULT_PORT);
     let mut final_address = format!("{}:{}", target_authority.host(), port);
-    let mut backends: Vec<BackendSettings> = Vec::with_capacity(1);
-
-    // We evaluate first whether we are allowed then we evaluate routes.
-
-    // Clone ACL data out of the read lock and drop the guard immediately.
-    // If you hold the read guard across backend connects, it will starves RPC writers.
-
-    let (acl, backend_specs, default_backend_id) = {
-        let state_guard = rt.state.read().await;
-
-        (
-            state_guard.acl_rules.clone(),
-            state_guard.backends.clone(),
-            state_guard.default_backend.clone(),
-        )
-    };
 
     debug!(subsystem = "proxy_access", final_address = %final_address,
         "HTTP CONNECT request");
@@ -256,58 +231,19 @@ async fn handle_http_request(
 
     // TODO: how much header information should we render available?
 
-    let mut recommended_routes = match ctx.acl_ctx.evaluate_routes(&backend_specs, &acl.hir) {
-        Ok(routes) => routes,
-        Err(failure) => {
+    let (mut backends, acl) = match backend_routing::build_backend_chain(&rt, &mut ctx).await {
+        (Some(b), acl) => (b, acl),
+        (None, _) => {
             let mut resp = Response::new(empty_body());
-            warn!(
-                subsystem = "proxy_errors",
-                "Failed to evaluate a request: {} (Context: {:#?})", failure, ctx
-            );
             *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
             return Ok(resp);
         }
     };
-
-    if !recommended_routes.is_empty() {
-        backends.append(&mut recommended_routes);
-    }
-
-    if backends.is_empty()
-        && let Some(ref backend_id) = default_backend_id
-    {
-        let backend = match backend_specs.get(backend_id) {
-            Some(b) => b.to_owned(),
-            None => {
-                warn!(
-                    subsystem = "proxy_errors",
-                    "Default backend {backend_id} not found in state, rejecting request",
-                );
-
-                let mut resp = Response::new(empty_body());
-                *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-                return Ok(resp);
-            }
-        };
-
-        backends.push(backend);
-    }
-
-    backends.reverse();
-
-    if backends.is_empty() {
-        ctx.acl_ctx.insert(
-            "route.local",
-            crate::acl::ast::ConcreteOperand::Boolean(true),
-        );
-    } else {
-        ctx.acl_ctx.insert(
-            "route.local",
-            crate::acl::ast::ConcreteOperand::Boolean(false),
-        );
-    }
-
-    match assess_request(start, target_authority, &ctx, &acl)? {
+    match map_acl_decision(
+        backend_routing::assess_request(&ctx, &acl),
+        start,
+        target_authority,
+    )? {
         Decision::TerminateWithResponse(resp) => return Ok(resp),
         Decision::RedirectDestination(target) => final_address = target,
         Decision::Continue => {}
@@ -321,48 +257,34 @@ async fn handle_http_request(
 
     let mut stream: Option<OutboundStream> = None;
     let start = Instant::now();
-    for backend in backends {
-        debug!(
-            subsystem = "proxy_access",
-            address = %final_address,
-            backend = ?backend,
-            "Backend selected for HTTP CONNECT"
-        );
-        match backend {
-            BackendSettings::UnresolvedBackend => {
-                // TODO: keep the IDs to print them here.
-                tracing::error!(
-                    "An unresolved backend was selected during HTTP CONNECT routing. This should not happen, rejecting the request."
-                );
-                let mut resp = Response::new(empty_body());
-                *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-                return Ok(resp);
-            }
-            BackendSettings::KnownBackend(backend) => {
-                match timeout(
-                    rt.settings.connect_timeout,
-                    connect_to_http_proxy_backend(
-                        &backend,
-                        &final_address,
-                        rt.state.clone(),
-                        inbound_protocol,
-                    ),
+
+    let backend_result = backend_routing::try_backends(
+        &mut backends,
+        &final_address,
+        rt.settings.connect_timeout,
+        |backend, target| {
+            let state = rt.state.clone();
+            async move {
+                match connect_to_http_proxy_backend(
+                    &backend,
+                    &target,
+                    state,
+                    inbound_protocol,
                 )
                 .await
                 {
-                    Ok(Ok(upstream)) => {
+                    Ok(upstream) => {
                         info!(
                             subsystem = "proxy_access",
-                            address = %final_address,
+                            address = %target,
                             backend = ?backend,
                             duration_ms = start.elapsed().as_millis(),
                             "Stream established to upstream backend"
                         );
 
-                        stream = Some(upstream);
-                        break;
+                        BackendOutcome::Success(upstream)
                     }
-                    Ok(Err(UpstreamConnectError::UpstreamResponse(resp))) => {
+                    Err(UpstreamConnectError::UpstreamResponse(resp)) => {
                         // Send back the client errors.
                         if resp.status().is_client_error() {
                             info!(
@@ -373,7 +295,7 @@ async fn handle_http_request(
                                 "Backend returned a non-200 client error for HTTP CONNECT, returning it to the client and terminating the request"
                             );
 
-                            return Ok(resp.map(|b| b.boxed()));
+                            BackendOutcome::Fatal(resp.map(|b| b.boxed()))
                         } else {
                             info!(
                                 subsystem = "proxy_access",
@@ -382,9 +304,11 @@ async fn handle_http_request(
                                 status = %resp.status(),
                                 "Backend returned a non-200 response for HTTP CONNECT, trying next as it's not a client error"
                             );
+
+                            BackendOutcome::Retry
                         }
                     }
-                    Ok(Err(UpstreamConnectError::IO(err))) => {
+                    Err(UpstreamConnectError::IO(err)) => {
                         info!(
                             subsystem = "proxy_access",
                             backend = ?backend,
@@ -392,29 +316,32 @@ async fn handle_http_request(
                             "Backend failed for HTTP CONNECT: {}, trying next",
                             err
                         );
-                    }
-                    Err(_) => {
-                        info!(
-                            subsystem = "proxy_access",
-                            backend = ?backend,
-                            duration_ms = start.elapsed().as_millis(),
-                            configured_timeout_ms = rt.settings.connect_timeout.as_millis(),
-                            "Backend timed out for HTTP CONNECT, trying next",
-                        );
+
+                        BackendOutcome::Retry
                     }
                 }
             }
+        }).await;
+
+    match backend_result {
+        Some(Ok((upstream, _backend))) => {
+            stream = Some(upstream);
         }
+        Some(Err(resp)) => {
+            return Ok(resp);
+        }
+        None => {}
     }
 
     if stream.is_none() {
         // At this point, we need to re-assess if the request can go through.
-        ctx.acl_ctx.insert(
-            "route.local",
-            crate::acl::ast::ConcreteOperand::Boolean(true),
-        );
+        backend_routing::mark_direct_exit(&mut ctx);
 
-        match assess_request(start, target_authority, &ctx, &acl)? {
+        match map_acl_decision(
+            backend_routing::assess_request(&ctx, &acl),
+            start,
+            target_authority,
+        )? {
             Decision::TerminateWithResponse(resp) => return Ok(resp),
             Decision::RedirectDestination(target) => final_address = target,
             _ => {}
