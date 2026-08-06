@@ -2,6 +2,7 @@
 name = "portail"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
 
 [lints.clippy]
 enum_variant_names = "allow"
@@ -14,7 +15,7 @@ clap = { version = "^4", features = ["derive", "string"] }
 fast-socks5 = "^1"
 http = "^1"
 http-body-util = "^0.1"
-hyper = { version = "^1", features = ["full"] }
+hyper = { version = "^1", features = ["server", "client", "http1", "http2"] }
 hyper-util = { version = "^0.1", features = ["tokio", "server", "http1"] }
 nix = { version = "^0.31", features = ["socket", "uio", "net", "resource"] }
 regex = "^1"
@@ -22,7 +23,7 @@ serde = { version = "^1", features = ["derive"] }
 serde_json = "^1"
 serde_with = "^3"
 thiserror = "^2"
-tokio = { version = "^1", features = ["full"] }
+tokio = { version = "^1", features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros", "signal"] }
 tokio-rustls = "^0.26"
 toml = "^1"
 tracing = "^0.1"
@@ -47,3 +48,9 @@ harness = false
 
 [profile.dev.package]
 insta.opt-level = 3
+
+[profile.release]
+strip = "symbols"
+lto = true
+panic = "abort"
+codegen-units = 1
