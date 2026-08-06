@@ -3,7 +3,7 @@ use crate::config::BackendSettings;
 use crate::config::KnownBackend;
 use crate::dns::happy_eyeballs_connect;
 use crate::proxy::context::{LocalRequestContext, OwnedRequestContext};
-use crate::proxy::protocol_detect::{ALPN_H2, ALPN_HTTP1_1};
+use crate::proxy::protocols::{ALPN_H2, ALPN_HTTP1_1};
 use crate::proxy::{ProxyError, ProxyRuntime, client_tls};
 use crate::state::State;
 use bytes::Bytes;
