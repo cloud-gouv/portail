@@ -6,64 +6,26 @@ use crate::{
     },
     state::State,
 };
-use std::{collections::HashSet, ffi::CStr, sync::Arc};
+use std::{collections::HashSet, sync::Arc};
 use tokio::{net::UnixListener, sync::RwLock};
 use tracing::{debug, info, warn};
 use zlink::{
     Server,
-    connection::{Gid, Socket, socket::FetchPeerCredentials},
+    connection::{Socket, socket::FetchPeerCredentials},
     service,
 };
 
 pub mod fr_gouv_portail_control;
 
-fn resolve_numeric_groups_to_names(gids: Vec<Gid>) -> HashSet<String> {
+fn resolve_numeric_groups_to_names(gids: Vec<zlink::connection::Gid>) -> HashSet<String> {
     let mut result = HashSet::new();
 
     for gid in gids {
-        let mut buf_size = unsafe { nix::libc::sysconf(nix::libc::_SC_GETGR_R_SIZE_MAX) };
-        if buf_size <= 0 {
-            buf_size = 1024; // fallback to 1 KB if sysconf fails
+        if let Ok(Some(group)) =
+            nix::unistd::Group::from_gid(nix::unistd::Gid::from_raw(gid.as_raw()))
+        {
+            result.insert(group.name);
         }
-        let mut group_name = None;
-
-        loop {
-            let mut grp: nix::libc::group = unsafe { std::mem::zeroed() };
-            // SAFETY: buf_size is always > 0 due to the conditional above.
-            // i64::MAX < usize::MAX therefore there's no overflow risk.
-            let mut buf = vec![0u8; buf_size as usize];
-            let mut grp_ptr: *mut nix::libc::group = std::ptr::null_mut();
-
-            let ret = unsafe {
-                nix::libc::getgrgid_r(
-                    gid.as_raw(),
-                    &mut grp,
-                    buf.as_mut_ptr().cast::<nix::libc::c_char>(),
-                    buf.len(),
-                    &mut grp_ptr,
-                )
-            };
-
-            if ret == 0 {
-                if !grp_ptr.is_null() {
-                    let cstr = unsafe { CStr::from_ptr(grp.gr_name) };
-                    group_name = Some(cstr.to_string_lossy().into_owned());
-                }
-                break;
-            } else if ret == nix::libc::ERANGE {
-                // Buffer too small, increase and retry
-                buf_size *= 2;
-                continue;
-            } else {
-                // NOTE: we silence the error here because
-                // we fallback and transform the group name into a numeric GID
-                // as a string.
-                break;
-            }
-        }
-
-        // Fallback: we format the numeric GID as a string.
-        result.insert(group_name.unwrap_or_else(|| format!("{}", gid)));
     }
 
     result
@@ -97,7 +59,7 @@ impl Control {
             .await
             .map_err(|_| ControlError::PermissionDenied)?;
 
-        let mut groups: Vec<Gid> = creds.unix_supplementary_group_ids().to_vec();
+        let mut groups: Vec<zlink::connection::Gid> = creds.unix_supplementary_group_ids().to_vec();
         groups.push(creds.unix_primary_group_id());
 
         let groups = resolve_numeric_groups_to_names(groups);
