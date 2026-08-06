@@ -183,9 +183,16 @@ pub struct Settings {
     /// IP address communicated to get the UDP packets back
     pub public_address: Option<std::net::IpAddr>,
 
-    /// Global generic options for proxying
+    /// Timeout for the client to send the initial bytes of a handshake.
+    /// (TLS ClientHello, SOCKS5 greeting, HTTP CONNECT request line).
+    /// Defaults to 15 seconds.
     #[serde_as(as = "serde_with::DurationSeconds<u64>")]
-    pub request_timeout: Duration,
+    pub handshake_timeout: Duration,
+
+    /// Timeout for establishing a TCP/UDP connection to a backend or origin.
+    #[serde(alias = "request-timeout")]
+    #[serde_as(as = "serde_with::DurationSeconds<u64>")]
+    pub connect_timeout: Duration,
 
     /// Whether to disable the TCP Nagle optimisation on the proxy side.
     #[serde(default)]

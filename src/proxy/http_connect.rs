@@ -337,7 +337,7 @@ async fn handle_http_request(
             }
             BackendSettings::KnownBackend(backend) => {
                 match timeout(
-                    rt.settings.request_timeout,
+                    rt.settings.connect_timeout,
                     connect_to_http_proxy_backend(
                         &backend,
                         &final_address,
@@ -395,7 +395,7 @@ async fn handle_http_request(
                             subsystem = "proxy_access",
                             backend = ?backend,
                             duration_ms = start.elapsed().as_millis(),
-                            configured_timeout_ms = rt.settings.request_timeout.as_millis(),
+                            configured_timeout_ms = rt.settings.connect_timeout.as_millis(),
                             "Backend timed out for HTTP CONNECT, trying next",
                         );
                     }
@@ -450,7 +450,7 @@ async fn handle_http_request(
             &rt.dns,
             authority.host(),
             port,
-            rt.settings.request_timeout,
+            rt.settings.connect_timeout,
             rt.settings.tcp_nodelay,
         )
         .await
@@ -469,7 +469,7 @@ async fn handle_http_request(
                 subsystem = "proxy_errors",
                 address = %final_address,
                 duration_ms = start.elapsed().as_millis(),
-                configured_timeout_ms = rt.settings.request_timeout.as_millis(),
+                configured_timeout_ms = rt.settings.connect_timeout.as_millis(),
                 "Direct connection via Happy Eyeballs failed: {err}",
             ),
         }

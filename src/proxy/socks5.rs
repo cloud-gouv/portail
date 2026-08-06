@@ -153,10 +153,21 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
 ) -> Result<(), SocksError> {
     let start = Instant::now();
 
-    let (proto, cmd, target_addr) = Socks5ServerProtocol::accept_no_auth(socket)
-        .await?
-        .read_command()
-        .await?;
+    let handshake = Socks5ServerProtocol::accept_no_auth(socket);
+
+    let (proto, cmd, target_addr) = timeout(rt.settings.handshake_timeout, async {
+        let proto = handshake.await?;
+        proto.read_command().await
+    })
+    .await
+    .map_err(|_| {
+        warn!(subsystem = "proxy_access", "SOCKS5 handshake timed out");
+
+        SocksError::Io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "SOCKS5 handshake timed out",
+        ))
+    })??;
 
     debug!(
         subsystem = "proxy_access",
@@ -317,7 +328,7 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
             }
             BackendSettings::KnownBackend(backend) => {
                 match timeout(
-                    rt.settings.request_timeout,
+                    rt.settings.connect_timeout,
                     connect_to_backend(&backend, &final_addr, rt.clone()),
                 )
                 .await
@@ -356,7 +367,7 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
                     Err(_) => {
                         debug!(
                             "Backend {} timed out after {:?}, trying the next one",
-                            &backend.target_address, rt.settings.request_timeout
+                            &backend.target_address, rt.settings.connect_timeout
                         );
                         continue;
                     }
@@ -402,7 +413,7 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
                     &rt.dns,
                     &host,
                     port,
-                    rt.settings.request_timeout,
+                    rt.settings.connect_timeout,
                     rt.settings.tcp_nodelay,
                 )
                 .await

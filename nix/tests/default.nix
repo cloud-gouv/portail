@@ -681,7 +681,7 @@ in
           services.portail = {
             enable = true;
             enableAtBoot = true;
-            settings.request-timeout = requestTimeout;
+            settings.connect-timeout = requestTimeout;
             acl.filter.rules.default =
               ''
                 policy hello {

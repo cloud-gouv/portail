@@ -5,6 +5,7 @@ use thiserror::Error;
 use tokio::{
     net::TcpStream,
     sync::{RwLock, Semaphore},
+    time::timeout,
 };
 use tokio_rustls::{
     TlsAcceptor, TlsStream,
@@ -13,7 +14,7 @@ use tokio_rustls::{
         server::{VerifierBuilderError, WebPkiClientVerifier},
     },
 };
-use tracing::{Instrument, debug, error};
+use tracing::{Instrument, debug, error, warn};
 
 use crate::{
     acl::ast::OwnedConcreteOperand, config::Settings, dns::DnsResolver,
@@ -153,12 +154,15 @@ pub async fn accept_client(
         async move {
             // The permit is dropped when the spawned task completes.
             let _permit = permit;
-            match detect_tls(&socket).await {
-                Ok(true) => {
+            // Wrap TLS detection in a timeout to prevent slowloris attacks
+            // where a client connects and sends nothing.
+            match timeout(rt.settings.handshake_timeout, detect_tls(&socket)).await {
+                Ok(Ok(true)) => {
                     debug!(subsystem = "proxy_access", "TLS detected");
                     if let Some(acceptor) = acceptor {
-                        match acceptor.accept(socket).await {
-                            Ok(tls_stream) => {
+                        match timeout(rt.settings.handshake_timeout, acceptor.accept(socket)).await
+                        {
+                            Ok(Ok(tls_stream)) => {
                                 debug!(
                                     subsystem = "proxy_access",
                                     "Authenticated TLS stream (client certificates)"
@@ -181,8 +185,14 @@ pub async fn accept_client(
                                     error!(subsystem = "proxy_errors", "TLS proxy error: {e:?}");
                                 }
                             }
-                            Err(e) => {
+                            Ok(Err(e)) => {
                                 error!(subsystem = "proxy_errors", "TLS handshake failed: {e:?}");
+                            }
+                            Err(_elapsed) => {
+                                warn!(
+                                    subsystem = "proxy_access",
+                                    "TLS handshake timed out, closing connection",
+                                );
                             }
                         }
                     } else {
@@ -193,7 +203,7 @@ pub async fn accept_client(
                     }
                 }
 
-                Ok(false) => {
+                Ok(Ok(false)) => {
                     debug!(
                         subsystem = "proxy_access",
                         "No TLS detected, serving unauthenticated and plaintext requests",
@@ -209,10 +219,17 @@ pub async fn accept_client(
                     }
                 }
 
-                Err(err) => {
+                Ok(Err(err)) => {
                     error!(
                         subsystem = "proxy_errors",
                         "While detecting the header for TLS, error occurred: {err:?}"
+                    );
+                }
+
+                Err(_elapsed) => {
+                    warn!(
+                        subsystem = "proxy_access",
+                        "TLS detection timed out, closing connection",
                     );
                 }
             }
