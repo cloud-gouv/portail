@@ -37,8 +37,12 @@ pub async fn connect_using_tls_auth<IO: AsyncRead + AsyncWrite + Unpin>(
             (None, Some(_)) => {
                 return Err(tokio::io::Error::other("Client auth set without roots"));
             }
-            // TODO: configure with default webpki
-            (None, None) => panic!("webpki setup"),
+            (None, None) => {
+                // TODO: use the webpki by default.
+                return Err(tokio::io::Error::other(
+                    "No TLS trust anchors configured for identity-aware backend",
+                ));
+            }
         };
 
         config.alpn_protocols = alpn_protocols;

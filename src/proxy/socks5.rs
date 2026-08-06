@@ -252,10 +252,18 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
     if backends.is_empty()
         && let Some(ref backend_id) = default_backend_id
     {
-        let backend = backend_specs
-            .get(backend_id)
-            .unwrap_or_else(|| panic!("BUG: default backend {backend_id} went away from state"))
-            .to_owned();
+        let backend = match backend_specs.get(backend_id) {
+            Some(b) => b.to_owned(),
+            None => {
+                warn!(
+                    subsystem = "proxy_errors",
+                    "Default backend {backend_id} not found in state, rejecting request",
+                );
+
+                proto.reply_error(&ReplyError::GeneralFailure).await?;
+                return Ok(());
+            }
+        };
 
         backends.push(backend);
     }

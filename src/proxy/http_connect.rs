@@ -273,10 +273,19 @@ async fn handle_http_request(
     if backends.is_empty()
         && let Some(ref backend_id) = default_backend_id
     {
-        let backend = backend_specs
-            .get(backend_id)
-            .unwrap_or_else(|| panic!("BUG: default backend {backend_id} went away from state"))
-            .to_owned();
+        let backend = match backend_specs.get(backend_id) {
+            Some(b) => b.to_owned(),
+            None => {
+                warn!(
+                    subsystem = "proxy_errors",
+                    "Default backend {backend_id} not found in state, rejecting request",
+                );
+
+                let mut resp = Response::new(empty_body());
+                *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                return Ok(resp);
+            }
+        };
 
         backends.push(backend);
     }
