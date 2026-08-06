@@ -17,19 +17,24 @@ use tokio_rustls::{
 use tracing::{Instrument, debug, error, warn};
 
 use crate::{
-    acl::ast::OwnedConcreteOperand, config::Settings, dns::DnsResolver,
-    proxy::context::OwnedRequestContext, state::State,
+    acl::ast::OwnedConcreteOperand,
+    config::Settings,
+    dns::DnsResolver,
+    proxy::{
+        context::OwnedRequestContext,
+        protocols::{DetectedProtocol, HttpVersion},
+    },
+    state::State,
 };
 
 mod client_tls;
 mod context;
 mod http_connect;
-mod protocol_detect;
+mod protocols;
 mod socks5;
 
 use context::InboundStream;
 use http_connect::{serve_http1_connect, serve_http2_connect};
-use protocol_detect::{ALPN_H2, ALPN_HTTP1_1, DetectedProtocol, detect_protocol, detect_tls};
 use socks5::serve_socks5;
 
 pub struct ProxyRuntime {
@@ -65,13 +70,31 @@ async fn serve_authenticated_proxy(
 ) -> anyhow::Result<()> {
     // TODO: extract context
 
-    let (proto, stream) = detect_protocol(InboundStream::TlsStream(stream)).await?;
+    let (proto, stream) = protocols::detect_protocol(InboundStream::TlsStream(stream)).await?;
 
     if let InboundStream::TlsStream(stream) = stream {
         match proto {
             DetectedProtocol::Socks5 => serve_socks5(rt, ctx, stream).await?,
-            DetectedProtocol::Http1 => serve_http1_connect(rt, ctx, stream).await?,
-            DetectedProtocol::Http2 => serve_http2_connect(rt, ctx, stream).await?,
+            DetectedProtocol::PlaintextHttp(HttpVersion::Http1_1) => {
+                serve_http1_connect(rt, ctx, stream).await?
+            }
+            DetectedProtocol::PlaintextHttp(HttpVersion::Http2_0) => {
+                serve_http2_connect(rt, ctx, stream).await?
+            }
+            DetectedProtocol::Tls(info) => {
+                let alpn = info.alpn.unwrap_or(vec![HttpVersion::Http1_1]);
+
+                if alpn.contains(&HttpVersion::Http2_0) {
+                    serve_http2_connect(rt, ctx, stream).await?
+                } else if alpn.contains(&HttpVersion::Http1_1) {
+                    serve_http1_connect(rt, ctx, stream).await?
+                } else {
+                    unreachable!();
+                }
+            }
+            DetectedProtocol::Ssh | DetectedProtocol::PlaintextHttp(_) => {
+                bail!("Unsupported protocol: {proto:?}")
+            }
             DetectedProtocol::Unknown => bail!("Unknown protocol"),
         }
     }
@@ -84,12 +107,30 @@ async fn serve_unauthenticated_proxy(
     ctx: OwnedRequestContext,
     stream: tokio::net::TcpStream,
 ) -> anyhow::Result<()> {
-    let (proto, stream) = detect_protocol(InboundStream::TcpStream(stream)).await?;
+    let (proto, stream) = protocols::detect_protocol(InboundStream::TcpStream(stream)).await?;
     if let InboundStream::TcpStream(stream) = stream {
         match proto {
             DetectedProtocol::Socks5 => serve_socks5(rt, ctx, stream).await?,
-            DetectedProtocol::Http1 => serve_http1_connect(rt, ctx, stream).await?,
-            DetectedProtocol::Http2 => serve_http2_connect(rt, ctx, stream).await?,
+            DetectedProtocol::PlaintextHttp(HttpVersion::Http1_1) => {
+                serve_http1_connect(rt, ctx, stream).await?
+            }
+            DetectedProtocol::PlaintextHttp(HttpVersion::Http2_0) => {
+                serve_http2_connect(rt, ctx, stream).await?
+            }
+            DetectedProtocol::Tls(info) => {
+                let alpn = info.alpn.unwrap_or(vec![HttpVersion::Http1_1]);
+
+                if alpn.contains(&HttpVersion::Http2_0) {
+                    serve_http2_connect(rt, ctx, stream).await?
+                } else if alpn.contains(&HttpVersion::Http1_1) {
+                    serve_http1_connect(rt, ctx, stream).await?
+                } else {
+                    unreachable!();
+                }
+            }
+            DetectedProtocol::Ssh | DetectedProtocol::PlaintextHttp(_) => {
+                bail!("Unsupported protocol: {proto:?}")
+            }
             DetectedProtocol::Unknown => bail!("Unknown protocol"),
         }
     }
@@ -127,7 +168,10 @@ async fn build_tls_acceptor(
                 server_certs.cert_chain.clone(),
                 server_certs.private_key.clone_key(),
             )?;
-            config.alpn_protocols = vec![ALPN_H2.to_vec(), ALPN_HTTP1_1.to_vec()];
+            config.alpn_protocols = vec![
+                protocols::ALPN_H2.to_vec(),
+                protocols::ALPN_HTTP1_1.to_vec(),
+            ];
             Ok(Some(TlsAcceptor::from(Arc::new(config))))
         } else {
             Ok(None)
@@ -156,7 +200,12 @@ pub async fn accept_client(
             let _permit = permit;
             // Wrap TLS detection in a timeout to prevent slowloris attacks
             // where a client connects and sends nothing.
-            match timeout(rt.settings.handshake_timeout, detect_tls(&socket)).await {
+            match timeout(
+                rt.settings.handshake_timeout,
+                protocols::tls::has_tls_prefix(&socket),
+            )
+            .await
+            {
                 Ok(Ok(true)) => {
                     debug!(subsystem = "proxy_access", "TLS detected");
                     if let Some(acceptor) = acceptor {
