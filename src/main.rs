@@ -10,6 +10,7 @@ use crate::rpc::fr_gouv_portail_control::{DynamicBackendSpec, GetCurrentBackendO
 use crate::systemd::sd_notify_ready;
 
 mod acl;
+mod backend_routing;
 mod config;
 mod dns;
 mod logging;
