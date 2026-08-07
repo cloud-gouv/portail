@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 pub use tokio_rustls::rustls::pki_types::ServerName;
 
 #[derive(Debug, Clone)]
@@ -116,6 +116,16 @@ pub struct ListenSettings {
     /// The TLS key material to present server facing TLS certificates
     pub tls_privkey: Option<PathBuf>,
     pub tls_chain: Option<PathBuf>,
+    /// Domains for TLS termination.
+    ///
+    /// When an inner TLS ClientHello SNI matches one of these patterns,
+    /// Portail terminates the inner TLS using its server certificates,
+    /// inspects the inner HTTP request, and re-evaluates the ACL with
+    /// full request context (method, path, query, scheme headers).
+    ///
+    /// Use these on domains you possess the certificate for.
+    #[serde(default)]
+    pub terminated_domains: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -234,7 +244,7 @@ pub struct Settings {
 }
 
 pub fn effective_max_connections(upper_bound: usize) -> usize {
-    use nix::sys::resource::{Resource, getrlimit};
+    use nix::sys::resource::{getrlimit, Resource};
 
     // We approximate there's 32 FDs which are independent of any connections
     // (logs, RPC socket, etc.)
