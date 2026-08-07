@@ -1,6 +1,5 @@
 ---
 source: src/acl/parser.rs
-assertion_line: 980
 expression: result.unwrap_err()
 ---
 error: Failure to parse the ACL rules

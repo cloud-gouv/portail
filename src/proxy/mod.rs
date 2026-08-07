@@ -28,7 +28,7 @@ use crate::{
 };
 
 mod client_tls;
-mod context;
+pub mod context;
 mod http_connect;
 mod protocols;
 mod socks5;
