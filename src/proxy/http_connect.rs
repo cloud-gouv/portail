@@ -3,7 +3,7 @@ use crate::config::BackendSettings;
 use crate::config::KnownBackend;
 use crate::dns::happy_eyeballs_connect;
 use crate::proxy::context::{LocalRequestContext, OwnedRequestContext};
-use crate::proxy::protocol_detect::{ALPN_H2, ALPN_HTTP1_1};
+use crate::proxy::protocols::{ALPN_H2, ALPN_HTTP1_1};
 use crate::proxy::{ProxyError, ProxyRuntime, client_tls};
 use crate::state::State;
 use bytes::Bytes;
@@ -492,6 +492,14 @@ async fn handle_http_request(
             let start = Instant::now();
             match hyper::upgrade::on(req).await {
                 Ok(upgraded) => {
+                    // TODO: peek into the contents to see if we can terminate this connection
+                    // ourselves and then enable ACL per-request inside the tunnel.
+                    // If this is HTTP, we can always do it.
+                    // If this is TLS, we can only do it if we possess the right certificate for
+                    // the traffic.
+                    // If this is SSH, we can terminate SSH on our side as long as we can connect
+                    // to the target ourselves.
+                    // If this is something else, we have no idea if we can do it.
                     let mut client = TokioIo::new(upgraded);
                     match tokio::io::copy_bidirectional(&mut client, &mut *stream).await {
                         Err(e) => error!(

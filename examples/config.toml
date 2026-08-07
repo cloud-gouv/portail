@@ -20,6 +20,7 @@ identity-aware = true
 cacert-file = "./cacert.pem"
 tls-privkey = "./server.key"
 tls-chain = "./fullchain.pem"
+terminated-domains = [ ".*corp.example.com" ]
 
 [escaper]
 cacert-file = "./cacert.pem"
