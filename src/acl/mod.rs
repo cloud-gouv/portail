@@ -7,11 +7,11 @@ use std::path::Path;
 
 pub use ast::Action;
 pub use evaluator::{EvaluationContext, OwnedEvaluationContext};
-pub use hir::{ACLHir, ast_to_hir};
+pub use hir::{ast_to_hir_contextualized, ACLHir};
 pub use parser::parse_into_ast;
 use thiserror::Error;
 
-use crate::config::Settings;
+use crate::{acl::hir::AclContext, config::Settings};
 
 #[derive(Debug, Clone)]
 pub struct ACLRules {
@@ -33,14 +33,19 @@ pub enum LoadError {
 pub fn load_rules_from_file<P: AsRef<Path>>(
     path: P,
     settings: &Settings,
+    context: AclContext,
 ) -> Result<ACLRules, LoadError> {
     let acl_contents = std::fs::read_to_string(path)?;
-    load_rules_from_str(&acl_contents, settings)
+    load_rules_from_str(&acl_contents, settings, context)
 }
 
-pub fn load_rules_from_str(contents: &str, settings: &Settings) -> Result<ACLRules, LoadError> {
+pub fn load_rules_from_str(
+    contents: &str,
+    settings: &Settings,
+    context: AclContext,
+) -> Result<ACLRules, LoadError> {
     let ast = parse_into_ast(contents)?;
-    let hir = ast_to_hir(ast, &settings.backends)?;
+    let hir = ast_to_hir_contextualized(ast, &settings.backends, context)?;
 
     Ok(ACLRules { hir })
 }

@@ -3,8 +3,8 @@ use std::collections::HashSet;
 
 use thiserror::Error;
 
-use crate::acl::Action;
 use crate::acl::ast;
+use crate::acl::Action;
 use crate::config::BackendSettings;
 
 #[derive(Debug, Clone)]
@@ -29,6 +29,14 @@ pub struct ACLHir {
     pub(crate) policies: Vec<PolicyDefinition>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum AclContext {
+    /// Filter ACL: allow, deny, redirect
+    Filter,
+    /// Explain ACL: explain.
+    Explain,
+}
+
 #[derive(Debug, Error)]
 pub enum TransformationError {
     #[error("Route block '{0}' has no backend to route to")]
@@ -43,6 +51,10 @@ pub enum TransformationError {
     DuplicateAttributeInRoute(&'static str, String),
     #[error("In policy block '{1}', attribute '{0}' occurs more than once")]
     DuplicateAttributeInPolicy(&'static str, String),
+    #[error("Action 'explain' is not valid in filter ACL context (policy: '{0}')")]
+    ExplainActionInFilterContext(String),
+    #[error("Action '{1}' is not valid in explain ACL context (policy '{0}')")]
+    InvalidActionInExplainContext(String, String),
 }
 
 fn route_to_hir(
@@ -101,6 +113,7 @@ fn route_to_hir(
 
 fn policy_to_hir<'s>(
     policy: ast::PolicyBlock<'s>,
+    context: AclContext,
 ) -> Result<PolicyDefinition, TransformationError> {
     let mut when = None;
     let mut require = None;
@@ -139,6 +152,25 @@ fn policy_to_hir<'s>(
     let action =
         action.ok_or_else(|| TransformationError::MissingAction(policy.name.to_owned()))?;
 
+    match context {
+        AclContext::Filter => {
+            if matches!(action, ast::Action::Explain(_)) {
+                return Err(TransformationError::ExplainActionInFilterContext(
+                    policy.name.to_owned(),
+                ));
+            }
+        }
+        AclContext::Explain => match action {
+            ast::Action::Explain(_) => {}
+            _ => {
+                return Err(TransformationError::InvalidActionInExplainContext(
+                    format!("{:?}", action),
+                    policy.name.to_owned(),
+                ));
+            }
+        },
+    }
+
     Ok(PolicyDefinition {
         name: policy.name.to_owned(),
         when,
@@ -151,9 +183,10 @@ fn policy_to_hir<'s>(
 /// ready for quick evaluation.
 ///
 /// Semantic validation occurs during this transformation pass.
-pub fn ast_to_hir<'s>(
+pub fn ast_to_hir_contextualized<'s>(
     ast: ast::ACLAst<'s>,
     backends: &HashMap<String, BackendSettings>,
+    context: AclContext,
 ) -> Result<ACLHir, TransformationError> {
     let mut route_names = HashSet::new();
     let mut policy_names = HashSet::new();
@@ -164,6 +197,11 @@ pub fn ast_to_hir<'s>(
     for entry in ast.entries {
         match entry {
             ast::ACLEntry::Route(route) => {
+                if matches!(context, AclContext::Explain) {
+                    // TODO: Warn on this.
+                    continue;
+                }
+
                 let hir = route_to_hir(route, backends)?;
                 if route_names.contains(hir.name.as_str()) {
                     return Err(TransformationError::DuplicateBlock(hir.name, "route"));
@@ -174,7 +212,7 @@ pub fn ast_to_hir<'s>(
             }
 
             ast::ACLEntry::Policy(policy) => {
-                let hir = policy_to_hir(policy)?;
+                let hir = policy_to_hir(policy, context)?;
                 if policy_names.contains(hir.name.as_str()) {
                     return Err(TransformationError::DuplicateBlock(hir.name, "policy"));
                 }
@@ -196,6 +234,13 @@ mod tests {
     use crate::config::{BackendSettings, ServerName};
     use insta::assert_debug_snapshot;
     use std::collections::HashMap;
+
+    pub fn ast_to_hir<'s>(
+        ast: ast::ACLAst<'s>,
+        backends: &HashMap<String, BackendSettings>,
+    ) -> Result<ACLHir, TransformationError> {
+        ast_to_hir_contextualized(ast, backends, AclContext::Filter)
+    }
 
     // TODO: check for missing backends
 
@@ -405,6 +450,46 @@ mod tests {
         assert!(matches!(
             result,
             Err(TransformationError::MissingBackendInSettings(_))
+        ));
+    }
+
+    #[test]
+    fn reject_explain_in_filter() {
+        let ast = ast::ACLAst {
+            entries: vec![ast::ACLEntry::Policy(ast::PolicyBlock {
+                name: "policy",
+                attributes: vec![ast::PolicyAttribute::Action(Action::Explain(
+                    "deny-employees.html".to_string(),
+                ))],
+            })],
+        };
+
+        let settings = settings_with_backends(&[]);
+
+        let result = ast_to_hir_contextualized(ast, &settings, AclContext::Filter);
+
+        assert!(matches!(
+            result,
+            Err(TransformationError::ExplainActionInFilterContext(_))
+        ));
+    }
+
+    #[test]
+    fn reject_allow_in_explain() {
+        let ast = ast::ACLAst {
+            entries: vec![ast::ACLEntry::Policy(ast::PolicyBlock {
+                name: "policy",
+                attributes: vec![ast::PolicyAttribute::Action(Action::Allow)],
+            })],
+        };
+
+        let settings = settings_with_backends(&[]);
+
+        let result = ast_to_hir_contextualized(ast, &settings, AclContext::Explain);
+
+        assert!(matches!(
+            result,
+            Err(TransformationError::InvalidActionInExplainContext(_, _))
         ));
     }
 }

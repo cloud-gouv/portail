@@ -1,0 +1,34 @@
+---
+source: src/acl/parser.rs
+expression: rules
+---
+ACLAst {
+    entries: [
+        Policy(
+            PolicyBlock {
+                name: "explain_policy",
+                attributes: [
+                    When(
+                        Comparison(
+                            DottedIdentifier(
+                                [
+                                    "user",
+                                    "authenticated",
+                                ],
+                            ),
+                            Eq,
+                            Boolean(
+                                true,
+                            ),
+                        ),
+                    ),
+                    Action(
+                        Explain(
+                            "deny-employee.html",
+                        ),
+                    ),
+                ],
+            },
+        ),
+    ],
+}
