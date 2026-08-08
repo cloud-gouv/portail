@@ -39,9 +39,9 @@ futures = "0.3.33"
 tokio-util = "0.7.19"
 
 [dev-dependencies]
-criterion = { version = "0.8.2", features = ["html_reports"] }
-insta = "1.47.2"
-rand = "0.10.1"
+criterion = { version = "=0.8.2", features = ["html_reports"] }
+insta = "=1.48.0"
+rand = "=0.10.2"
 
 [[bench]]
 name = "acl"
