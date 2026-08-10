@@ -11,6 +11,8 @@ use tracing_subscriber::{
     util::SubscriberInitExt,
 };
 
+mod writer;
+
 #[derive(Debug, Clone)]
 pub enum LogFormat {
     #[allow(dead_code)]
