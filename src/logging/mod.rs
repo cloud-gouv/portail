@@ -8,12 +8,17 @@ use tracing_subscriber::{
     EnvFilter, Layer, Registry,
     filter::FilterExt,
     layer::{Filter, SubscriberExt},
+    reload,
     util::SubscriberInitExt,
 };
 
 use crate::logging::writer::SharedFileWriter;
 
 mod writer;
+
+/// A handle that allows reloading the global log level filter at runtime.
+/// It is used for RPC `SetLogLevel`.
+pub type LogReloadHandle = reload::Handle<EnvFilter, Registry>;
 
 #[derive(Debug, Clone)]
 pub enum LogFormat {
@@ -377,13 +382,7 @@ fn create_layer_for_route(
 
     Ok((
         fmt_layer
-            .with_filter(
-                SubsystemFilter::new(subsystem).and(
-                    EnvFilter::builder()
-                        .with_default_directive(LevelFilter::INFO.into())
-                        .from_env_lossy(),
-                ),
-            )
+            .with_filter(SubsystemFilter::new(subsystem))
             .boxed(),
         guard,
     ))
@@ -395,6 +394,7 @@ pub struct LogGuard {
     #[allow(dead_code)]
     guards: Vec<WorkerGuard>,
     file_handles: Vec<SharedFileWriter>,
+    pub reload_handle: LogReloadHandle,
 }
 
 impl LogGuard {
@@ -418,6 +418,13 @@ pub fn init(preset: LogPreset) -> anyhow::Result<LogGuard> {
     let mut guards = Vec::new();
     let mut file_handles = Vec::new();
 
+    let env_filter = EnvFilter::builder()
+        .with_default_directive(LevelFilter::INFO.into())
+        .from_env_lossy();
+
+    let (reload_layer, reload_handle) = reload::Layer::new(env_filter);
+    layers.push(Layer::boxed(reload_layer));
+
     // For each subsystem, create one layer per route tagged by the subsystem filter.
     for (subsystem, log_config) in config {
         for route in log_config.routes {
@@ -433,5 +440,6 @@ pub fn init(preset: LogPreset) -> anyhow::Result<LogGuard> {
     Ok(LogGuard {
         guards,
         file_handles,
+        reload_handle,
     })
 }
