@@ -4,13 +4,12 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-/// File writers that can be atomically replaced.
-
-#[derive(Clone)]
-struct SharedFileWriter {
+/// File writer that can be atomically replaced.
+#[derive(Debug, Clone)]
+pub struct SharedFileWriter {
     file: Arc<Mutex<File>>,
     open_options: OpenOptions,
-    path: PathBuf,
+    pub path: PathBuf,
 }
 
 impl SharedFileWriter {
