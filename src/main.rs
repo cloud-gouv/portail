@@ -49,6 +49,12 @@ enum RpcCommands {
         backend_id: String,
     },
 
+    /// Change the global log level of the daemon at runtime.
+    SetLogLevel {
+        /// Log level directive (e.g. "debug", "trace", "warn", "portail=debug")
+        level: String,
+    },
+
     /// Unset the default backend via RPC.
     UnsetDefaultBackend,
 
@@ -194,6 +200,26 @@ async fn main() -> Result<()> {
                             std::io::stdout(),
                             &serde_json::json!({
                                 "success": true
+                            }),
+                        )
+                        .context("While writing JSON")?;
+                    }
+                }
+
+                RpcCommands::SetLogLevel { level } => {
+                    connection.set_log_level(&level)
+                        .await
+                        .context("During Varlink low-level communications. Are you using same versions of Portail on both sides?")?
+                        .context("Failed to set log level")?;
+
+                    if !json {
+                        println!("Log level changed to '{}'.", level);
+                    } else {
+                        serde_json::to_writer(
+                            std::io::stdout(),
+                            &serde_json::json!({
+                                "success": true,
+                                "level": level
                             }),
                         )
                         .context("While writing JSON")?;
