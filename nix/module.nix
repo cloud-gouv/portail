@@ -127,6 +127,24 @@ in
       };
     };
 
+    services.logrotate.settings = {
+      "/var/log/portail" = {
+        files = [ "/var/log/portail/*.log" ];
+        frequency = "weekly";
+        rotate = 4;
+        compress = true;
+        delaycompress = true;
+        missingok = true;
+        notifempty = true;
+        nocreate = true;
+        sharedscripts = true;
+        # Tell Portail to rotate its log files.
+        postrotate = ''
+          systemctl kill -s HUP portail.service || true
+        '';
+      };
+    };
+
     systemd.services.portail = {
       description = "Portail access proxy";
       wantedBy = mkIf cfg.enableAtBoot [ "multi-user.target" ];
