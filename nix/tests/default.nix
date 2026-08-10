@@ -1025,4 +1025,41 @@ in
         ), "Unexpected HTTP CONNECT result: {}".format(json.dumps(result))
       '';
     };
+
+  # Sends SIGHUP to portail after simulating a logrotate nocreate rename.
+  # Verifies the daemon reopen its log files without crashing.
+  sighup-reopen = pkgs.testers.nixosTest {
+    name = "portail-sighup";
+    nodes = {
+      node = { ... }: {
+        imports = [ ../module.nix portailEnv ];
+
+        services.portail = {
+          enable = true;
+          enableAtBoot = true;
+          acl.filter.rules.default = ''
+            policy allow_all {
+              action allow
+            }
+          '';
+        };
+      };
+    };
+    testScript = ''
+      start_all()
+
+      node.wait_for_unit("portail.service")
+
+      node.wait_until_succeeds("test -f /var/log/portail/access.log")
+      node.wait_until_succeeds("test -f /var/log/portail/error.log")
+      node.wait_until_succeeds("test -f /var/log/portail/rpc.log")
+
+      node.succeed("mv /var/log/portail/access.log /var/log/portail/access.log.1")
+      node.succeed("systemctl kill -s HUP portail.service")
+
+      node.wait_until_succeeds("test -f /var/log/portail/access.log")
+      # Portail must not die.
+      node.succeed("systemctl is-active portail.service")
+    '';
+  };
 }
