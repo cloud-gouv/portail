@@ -11,6 +11,8 @@ use tracing_subscriber::{
     util::SubscriberInitExt,
 };
 
+use crate::logging::writer::SharedFileWriter;
+
 mod writer;
 
 #[derive(Debug, Clone)]
@@ -341,6 +343,7 @@ fn preset_to_config(preset: LogPreset) -> HashMap<Subsystem, LogConfig> {
 fn create_layer_for_route(
     subsystem: Subsystem,
     route: &LogRoute,
+    file_handles: &mut Vec<SharedFileWriter>,
 ) -> Result<(Box<dyn Layer<Registry> + Send + Sync>, WorkerGuard), std::io::Error> {
     let (writer, guard) = match &route.output {
         LogOutput::Stdout => tracing_appender::non_blocking(std::io::stdout()),
@@ -348,11 +351,12 @@ fn create_layer_for_route(
         LogOutput::File(path) => {
             // Log files may contain all users' traffic destinations.
             // It MUST never be world-readable.
-            let file = OpenOptions::new()
-                .append(true)
-                .create(true)
-                .mode(0o600)
-                .open(path)?;
+            let mut open_options = OpenOptions::new();
+            open_options.append(true).create(true).mode(0o600);
+            let file = SharedFileWriter::new(path.clone(), open_options)?;
+
+            file_handles.push(file.clone());
+
             tracing_appender::non_blocking(file)
         }
         LogOutput::Journald => unimplemented!(),
@@ -388,25 +392,46 @@ fn create_layer_for_route(
 /// Guards for each worker that drains the logging queue.
 /// When they are dropped, the corresponding log outputs are closed.
 pub struct LogGuard {
+    #[allow(dead_code)]
     guards: Vec<WorkerGuard>,
+    file_handles: Vec<SharedFileWriter>,
+}
+
+impl LogGuard {
+    /// Reopen every file-based log output.
+    /// Intended for logrotate.
+    pub fn reopen_files(&self) {
+        for handle in &self.file_handles {
+            if let Err(err) = handle.reopen() {
+                eprintln!(
+                    "Failed to reopen log file '{}': {err}",
+                    handle.path.display()
+                );
+            }
+        }
+    }
 }
 
 pub fn init(preset: LogPreset) -> anyhow::Result<LogGuard> {
     let config = preset_to_config(preset);
     let mut layers = Vec::new();
-    let mut guards = LogGuard { guards: Vec::new() };
+    let mut guards = Vec::new();
+    let mut file_handles = Vec::new();
 
     // For each subsystem, create one layer per route tagged by the subsystem filter.
     for (subsystem, log_config) in config {
         for route in log_config.routes {
-            let (layer, guard) = create_layer_for_route(subsystem, &route)
+            let (layer, guard) = create_layer_for_route(subsystem, &route, &mut file_handles)
                 .context("Creating a layer for a log route")?;
             layers.push(layer);
-            guards.guards.push(guard);
+            guards.push(guard);
         }
     }
 
     tracing_subscriber::registry().with(layers).init();
 
-    Ok(guards)
+    Ok(LogGuard {
+        guards,
+        file_handles,
+    })
 }
