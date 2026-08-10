@@ -6,7 +6,6 @@ use tracing::level_filters::LevelFilter;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{
     EnvFilter, Layer, Registry,
-    filter::FilterExt,
     layer::{Filter, SubscriberExt},
     reload,
     util::SubscriberInitExt,
@@ -426,6 +425,7 @@ pub fn init(preset: LogPreset) -> anyhow::Result<LogGuard> {
     layers.push(Layer::boxed(reload_layer));
 
     // For each subsystem, create one layer per route tagged by the subsystem filter.
+    // Level filtering is handled by the reload layer above.
     for (subsystem, log_config) in config {
         for route in log_config.routes {
             let (layer, guard) = create_layer_for_route(subsystem, &route, &mut file_handles)
