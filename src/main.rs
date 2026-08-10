@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use std::net::SocketAddr;
+use std::sync::Mutex;
 use std::{path::PathBuf, sync::Arc};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
@@ -281,7 +282,30 @@ async fn main() -> Result<()> {
             bind_rpc_socket,
             log_preset,
         } => {
-            let _guards = logging::init(log_preset.into()).expect("Failed to initialize logging");
+            let log_guard = Arc::new(Mutex::new(
+                logging::init(log_preset.into()).expect("Failed to initialize logging"),
+            ));
+
+            // SIGHUP handler for log rotation.
+            // Reopen every file based log output after logrotate has moved the current files
+            // aside.
+            {
+                let log_guard = log_guard.clone();
+                tokio::spawn(async move {
+                    let mut sig_hup =
+                        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+                            .expect("Failed to set up SIGHUP handler");
+
+                    loop {
+                        sig_hup.recv().await;
+                        tracing::info!("Received SIGHUP, reopening log files");
+                        if let Ok(guard) = log_guard.lock() {
+                            guard.reopen_files();
+                        }
+                    }
+                });
+            }
+
             info!("Reading Portail settings from '{}'", config.display());
             let settings: Arc<config::Settings> = Arc::new(config::init(&config));
 
