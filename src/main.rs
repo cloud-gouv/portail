@@ -357,7 +357,12 @@ async fn main() -> Result<()> {
 
             let (proxy_fut, rpc_fut) = (
                 proxy::start(proxy_rt, tcp_listener, effective_max_conn),
-                rpc::start(settings.clone(), state.clone(), rpc_listener),
+                rpc::start(
+                    settings.clone(),
+                    state.clone(),
+                    rpc_listener,
+                    log_guard.lock().unwrap().reload_handle.clone(),
+                ),
             );
 
             if let Err(e) = sd_notify_ready() {

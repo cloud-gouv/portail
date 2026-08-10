@@ -1,5 +1,6 @@
 use crate::{
     config::{BackendSettings, KnownBackend, Settings},
+    logging::LogReloadHandle,
     rpc::fr_gouv_portail_control::{
         BackendListItem, ControlError, DynamicBackendSpec, GetCurrentBackendOutput,
         ListBackendsOutput,
@@ -34,11 +35,20 @@ fn resolve_numeric_groups_to_names(gids: Vec<zlink::connection::Gid>) -> HashSet
 pub struct Control {
     settings: Arc<Settings>,
     state: Arc<RwLock<State>>,
+    log_reload_handle: LogReloadHandle,
 }
 
 impl Control {
-    pub fn new(settings: Arc<Settings>, state: Arc<RwLock<State>>) -> Self {
-        Self { settings, state }
+    pub fn new(
+        settings: Arc<Settings>,
+        state: Arc<RwLock<State>>,
+        log_reload_handle: LogReloadHandle,
+    ) -> Self {
+        Self {
+            settings,
+            state,
+            log_reload_handle,
+        }
     }
 }
 
@@ -240,10 +250,11 @@ pub async fn start(
     settings: Arc<Settings>,
     state: Arc<RwLock<State>>,
     listener: UnixListener,
+    log_reload_handle: LogReloadHandle,
 ) -> anyhow::Result<()> {
     let server: Server<zlink::tokio::unix::Listener, _> = Server::new(
         listener.into(),
-        Control::new(settings.clone(), state.clone()),
+        Control::new(settings.clone(), state.clone(), log_reload_handle),
     );
 
     info!("started Varlink service");
