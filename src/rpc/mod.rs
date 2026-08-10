@@ -9,7 +9,8 @@ use crate::{
 };
 use std::{collections::HashSet, sync::Arc};
 use tokio::{net::UnixListener, sync::RwLock};
-use tracing::{debug, info, warn};
+use tracing::{debug, info, level_filters::LevelFilter, warn};
+use tracing_subscriber::EnvFilter;
 use zlink::{
     Server,
     connection::{Socket, socket::FetchPeerCredentials},
@@ -139,6 +140,37 @@ where
             state.default_backend = None;
         }
 
+        Ok(())
+    }
+
+    #[tracing::instrument(skip_all, fields(subsystem = "rpc", level = %level))]
+    async fn set_log_level(
+        &mut self,
+        level: &str,
+        #[zlink(connection)] conn: &mut zlink::Connection<Sock>,
+    ) -> Result<(), ControlError> {
+        self.check_authorization(conn, self.settings.rpc.admin_groups.iter())
+            .await?;
+
+        let new_filter = EnvFilter::builder()
+            .with_default_directive(LevelFilter::INFO.into())
+            .parse(level)
+            .map_err(|e| ControlError::InvalidLogLevel {
+                reason: e.to_string(),
+            })?;
+
+        info!(
+            new_level = %level,
+            "Reloading global log levels"
+        );
+
+        self.log_reload_handle
+            .reload(new_filter)
+            .map_err(|e| ControlError::InvalidLogLevel {
+                reason: e.to_string(),
+            })?;
+
+        info!("Global log level reloaded successfully");
         Ok(())
     }
 

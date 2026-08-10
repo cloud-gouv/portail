@@ -29,6 +29,9 @@ pub enum ControlError {
     /// This backend is not dynamic and cannot be changed
     ImmutableBackend,
     PermissionDenied,
+    InvalidLogLevel {
+        reason: String,
+    },
 }
 
 impl Display for ControlError {
@@ -60,6 +63,10 @@ impl Display for ControlError {
             Self::InvalidBackend { reason } => {
                 f.write_fmt(format_args!("Backend passed had invalid data: {}", reason))?
             }
+
+            Self::InvalidLogLevel { reason } => {
+                f.write_fmt(format_args!("Invalid log level: {}", reason))?
+            }
         }
 
         Ok(())
@@ -84,6 +91,7 @@ pub trait Control {
         backend_id: &str,
         backend_spec: DynamicBackendSpec,
     ) -> zlink::Result<Result<(), ControlError>>;
+    async fn set_log_level(&mut self, level: &str) -> zlink::Result<Result<(), ControlError>>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, zlink::introspect::Type)]
