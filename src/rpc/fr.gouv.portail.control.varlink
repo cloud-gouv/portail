@@ -4,6 +4,7 @@ method SetDefaultBackend(backend_id: ?string) -> ()
 method GetCurrentBackend() -> (backend_id: string)
 method ListBackends() -> (backends: []BackendListItem)
 method UpdateDynamicBackend(backend_id: string, backend_spec: DynamicBackendSpec) -> ()
+method SetLogLevel(level: string) -> ()
 
 type DynamicBackendSpec (
   target_address: string,
@@ -32,3 +33,5 @@ error InvalidBackend (reason: string)
 error ImmutableBackend ()
 # Client is not allowed to call this method.
 error PermissionDenied ()
+# Log level was rejected by the API
+error InvalidLogLevel (reason: string)
