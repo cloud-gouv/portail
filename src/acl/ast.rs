@@ -43,6 +43,7 @@ pub enum PolicyAttribute {
 #[derive(Debug, Clone)]
 pub enum Action {
     Allow,
+    #[allow(dead_code)]
     Deny(Option<PathBuf>),
     Redirect(Uri),
 }
