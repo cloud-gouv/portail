@@ -1,0 +1,60 @@
+name: '[Portail] Docs'
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'nix/docs.nix'
+      - 'nix/overlay.nix'
+      - 'nix/package.nix'
+      - '.github/workflows/docs.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: samueldr/lix-gha-installer-action@7b7f14d320d6aacfb65bd1ef761566b3b69e474c # main
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      - name: Build docs via nix-build
+        run: nix-build nix/ -A package.docs.all -o result-docs -I nixpkgs=channel:nixos-unstable
+
+      - name: Assemble Pages site
+        run: |
+          mkdir -p _site/docs
+          cp --no-preserve=mode -r result-docs/en _site/docs/en
+          cp --no-preserve=mode -r result-docs/fr _site/docs/fr
+          touch _site/.nojekyll
+          # root + /docs landing: redirect + language choice
+          cat > _site/docs/index.html <<'HTML'
+          <!doctype html><meta charset="utf-8">
+          <meta http-equiv="refresh" content="0; url=docs/en/">
+          <title>Portail Docs</title>
+          <p><a href="docs/en/">English</a> · <a href="docs/fr/">Français</a></p>
+          HTML
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
