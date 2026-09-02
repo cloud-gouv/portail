@@ -40,9 +40,9 @@ jobs:
           # root + /docs landing: redirect + language choice
           cat > _site/docs/index.html <<'HTML'
           <!doctype html><meta charset="utf-8">
-          <meta http-equiv="refresh" content="0; url=docs/en/">
+          <meta http-equiv="refresh" content="0; url="en/">
           <title>Portail Docs</title>
-          <p><a href="docs/en/">English</a> · <a href="docs/fr/">Français</a></p>
+          <p><a href="en/">English</a> · <a href="fr/">Français</a></p>
           HTML
 
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
