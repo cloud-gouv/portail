@@ -49,7 +49,7 @@ Tout le filtrage et la traçabilité reposent sur l'instance locale.
 ┌──────────────┐     TCP direct        ┌──────────┐
 │  curl / SSH  │──────────────────────▶│ Internet │
 │      │       │                       └──────────┘
-│  ┌──┴────┐   │
+│  ┌───┴───┐   │
 │  │Portail│   │  Évaluation ACL : route.local = true
 │  └───────┘   │  Aucun proxy distant impliqué
 └──────────────┘
@@ -65,16 +65,16 @@ est injoignable, le Portail client bascule en mode autonome (ligne pointillée).
 ```
   Poste de travail                        Serveur
 ┌──────────────┐  SOCKS5 / HTTP CONNECT  ┌──────────────┐     ┌──────────┐
-│  curl / SSH  │────────────────────────▶│ SOCKS5/HTTP  │────▶│ Internet │
-│      │       │                         │    proxy     │     └──────────┘
-│  ┌──┴────┐   │                         └──────┬───────┘     ┌──────────┐
-│  │Portail│   │  ACL : évaluation locale         └────────────▶│ Intranet │
-│  └──┬────┘   │  route.local = false                          └──────────┘
-│     │        │
-│     │ fallback (autonome, route.local = true)
-│     └────────────────────────────────────────▶ ┌──────────┐
-└──────────────────────────────────────────────┘ │ Internet │
-                                                 └──────────┘
+│  curl / SSH  │───────┬────────────────▶│ SOCKS5/HTTP  │────▶│ Internet │
+│      │       │       │                 │    proxy     │     └──────────┘
+│  ┌───┴───┐   │       │                 └──────┬───────┘     ┌──────────┐
+│  │Portail│   │  ACL : évaluation locale       └────────────▶│ Intranet │
+│  └───┬───┘   │  route.local = false                         └──────────┘
+│      │       │
+│      │    fallback (autonome, route.local = true)
+│      └────────────────────────────────────────▶ ┌──────────┐
+└───────────────────────────────────────────────┘ │ Internet │
+                                                  └──────────┘
 ```
 
 ### Scénario 3 : Client + serveur Portail (double ACL)
@@ -90,15 +90,15 @@ est injoignable, le client bascule en mode autonome (ligne pointillée).
   Poste de travail                        Serveur
 ┌──────────────┐  SOCKS5 / HTTP CONNECT  ┌──────────────┐     ┌──────────┐
 │  curl / SSH  │───────┬────────────────▶│   Portail    │────▶│ Internet │
-│      │       │       │                │  (serveur)   │     └──────────┘
-│  ┌──┴────┐   │       │                └──────┬───────┘     ┌──────────┐
-│  │Portail│   │  Couche ACL 1                  └────────────▶│ Intranet │
-│  │(client)   │  route.local = false                         └──────────┘
-│  └──┬────┘   │
-│     │        │  fallback (autonome, route.local = true)
-│     └────────────────────────────────────────▶ ┌──────────┐
-└──────────────────────────────────────────────┘ │ Internet │
-                                                 └──────────┘
+│      │       │       │                 │  (serveur)   │     └──────────┘
+│  ┌───┴────┐  │       │                 └──────┬───────┘     ┌──────────┐
+│  │Portail │  │  Couche ACL 1                  └────────────▶│ Intranet │
+│  │(client)│  │  route.local = false                         └──────────┘
+│  └───┬────┘  │
+│      │    fallback (autonome, route.local = true)
+│      └────────────────────────────────────────▶ ┌──────────┐
+└───────────────────────────────────────────────┘ │ Internet │
+                                                  └──────────┘
 ```
 
 ### Scénario 4 : Chaîne complète avec backends applicatifs en mTLS
@@ -115,28 +115,28 @@ tous les backends échouent, le client bascule en mode autonome (ligne pointill�
 ┌──────────────┐  mTLS                   ┌──────────────┐
 │  curl / SSH  │────────────────────────▶│   Portail    │
 │      │       │  certificat client      │  (serveur)   │
-│  ┌──┴────┐   │                         └──────┬───────┘
-│  │Portail│   │                                │
-│  │(client)   │                   ┌────────────┼────────────┐
-│  └──┬────┘   │                   │ mTLS       │ mTLS       │ mTLS
-│     │        │                   ▼            ▼            ▼
-│     │        │              ┌─────────┐ ┌─────────┐ ┌─────────┐
-│     │        │              │ Backend │ │ Backend │ │ Backend │
-│     │        │              │    A    │ │    B    │ │    C    │
-│     │        │              └────┬────┘ └────┬────┘ └────┬────┘
-│     │        │              ┌────┴──────────┴──────────┴────┐
-│     │        │              │    backends identity-aware    │
-│     │        │              └──────────────┬───────────────┘
-│     │        │                             │
-│     │        │         ┌───────────────────┼───────────────────┐
-│     │        │         ▼                   ▼                   ▼
-│     │        │   ┌──────────┐       ┌──────────┐       ┌──────────┐
-│     │        │   │ Internet │       │ Intranet │       │   Apps   │
-│     │        │   │  accès   │       │  accès   │       │  métier  │
-│     │        │   └──────────┘       └──────────┘       └──────────┘
-│     │        │
-│     │ fallback (autonome, route.local = true)
-│     └────────────────────────────────────────▶ ┌──────────┐
-└──────────────────────────────────────────────┘ │ Internet │
-                                                 └──────────┘
+│  ┌───┴────┐  │                         └──────┬───────┘
+│  │Portail │  │                                │
+│  │(client)│  │                   ┌────────────┼────────────┐
+│  └───┬────┘  │                   │ mTLS       │ mTLS       │ mTLS
+│      │       │                   ▼            ▼            ▼
+│      │       │              ┌─────────┐ ┌─────────┐ ┌─────────┐
+│      │       │              │ Backend │ │ Backend │ │ Backend │
+│      │       │              │    A    │ │    B    │ │    C    │
+│      │       │              └────┬────┘ └────┬────┘ └────┬────┘
+│      │       │              ┌────┴───────────┴───────────┴────┐
+│      │       │              │    backends identity-aware      │
+│      │       │              └────────────────┬────────────────┘
+│      │       │                               │
+│      │       │           ┌───────────────────┼───────────────────┐
+│      │       │           ▼                   ▼                   ▼
+│      │       │     ┌──────────┐       ┌──────────┐       ┌──────────┐
+│      │       │     │ Internet │       │ Intranet │       │   Apps   │
+│      │       │     │  accès   │       │  accès   │       │  métier  │
+│      │       │     └──────────┘       └──────────┘       └──────────┘
+│      │       │
+│      │    fallback (autonome, route.local = true)
+│      └────────────────────────────────────────▶ ┌──────────┐
+└───────────────────────────────────────────────┘ │ Internet │
+                                                  └──────────┘
 ```
