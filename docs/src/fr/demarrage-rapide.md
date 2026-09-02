@@ -28,7 +28,7 @@ Ajoutez le module Portail à votre configuration NixOS :
 ```nix
 {
   imports = [
-    # Vous pouvez utiliser Flakes ou n'''importe quel gestionnaire de dépendances (ex. npins, lon, etc.) pour obtenir les entrées de Portail.
+    # Vous pouvez utiliser Flakes ou n'importe quel gestionnaire de dépendances (ex. npins, lon, etc.) pour obtenir les entrées de Portail.
     /chemin/vers/portail/nix/module.nix
   ];
 
@@ -54,7 +54,7 @@ n'a été fournie via RPC, les requêtes vers ce backend échoueront.
 ```nix
 services.portail.settings.backends = {
   mon_proxy_secret = {
-    # Vous n'''avez pas besoin de mettre de target-address.
+    # Vous n'avez pas besoin de mettre de target-address.
     # target-address = "";
     # Elle sera renseignée dynamiquement.
     dynamic = true;
