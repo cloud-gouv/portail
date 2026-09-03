@@ -5,9 +5,11 @@ in
   {
     packages = pkgs.lib.recurseIntoAttrs {
       portail = entrypoint.package;
+      xtr = pkgs.xtr;
     };
 
     checks = pkgs.lib.recurseIntoAttrs {
       integration = pkgs.lib.recurseIntoAttrs entrypoint.tests;
+      devShell = entrypoint.shell;
     };
   }
