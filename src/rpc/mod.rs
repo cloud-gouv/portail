@@ -2,17 +2,21 @@ use crate::{
     config::{BackendSettings, KnownBackend, Settings},
     logging::LogReloadHandle,
     rpc::fr_gouv_portail_control::{
-        BackendListItem, ControlError, DynamicBackendSpec, GetCurrentBackendOutput,
+        BackendListItem, ControlError, DynamicBackendSpec, Event, GetCurrentBackendOutput,
         ListBackendsOutput,
     },
     state::State,
 };
-use std::{collections::HashSet, sync::Arc};
+use std::{collections::HashSet, pin::Pin, sync::Arc};
 use tokio::{net::UnixListener, sync::RwLock};
+use tokio_stream::{
+    StreamExt,
+    wrappers::{BroadcastStream, errors::BroadcastStreamRecvError::Lagged},
+};
 use tracing::{debug, info, level_filters::LevelFilter, warn};
 use tracing_subscriber::EnvFilter;
 use zlink::{
-    Server,
+    Reply, Server,
     connection::{Socket, socket::FetchPeerCredentials},
     service,
 };
@@ -274,6 +278,52 @@ where
                 })
                 .collect(),
         }
+    }
+
+    #[tracing::instrument(skip_all, fields(subsystem = "rpc"))]
+    #[zlink(more)]
+    async fn subscribe_events(
+        &mut self,
+        more: bool,
+        filter_event_types_bitmap: i64,
+        #[zlink(connection)] conn: &mut zlink::Connection<Sock>,
+    ) -> impl futures_util::Stream<Item = Result<Reply<Event>, ControlError>> {
+        let auth_result = self
+            .check_authorization(conn, self.settings.rpc.trusted_groups.iter())
+            .await;
+
+        let rx = self.state.read().await.event_bus.subscribe();
+
+        let base = BroadcastStream::new(rx).filter_map(move |result| {
+            let event = match result {
+                Ok(ev) => ev,
+                Err(Lagged(n)) => {
+                    warn!(
+                        skipped = n,
+                        subsystem = "rpc",
+                        "Event subscriber lagged, skipped events"
+                    );
+                    return None;
+                }
+            };
+
+            if (event.event_type & filter_event_types_bitmap) == 0 {
+                return None;
+            }
+
+            Some(Ok(Reply::new(Some(event))))
+        });
+
+        // Type erasure is required here because we have two different streams in the match arms.
+        let boxed_stream: Pin<
+            Box<dyn futures_util::Stream<Item = Result<Reply<Event>, ControlError>>>,
+        > = match auth_result {
+            Ok(()) if more => Box::pin(base),
+            Ok(()) => Box::pin(tokio_stream::once(Err(ControlError::OnlyStreaming))),
+            Err(e) => Box::pin(tokio_stream::once(Err(e))),
+        };
+
+        boxed_stream
     }
 }
 
