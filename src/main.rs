@@ -15,6 +15,7 @@ mod acl;
 mod backend_routing;
 mod config;
 mod dns;
+mod events;
 mod logging;
 mod proxy;
 mod rpc;
