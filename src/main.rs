@@ -403,10 +403,9 @@ async fn main() -> Result<()> {
             info!("Starting services");
 
             let (proxy_fut, rpc_fut) = (
-                proxy::start(proxy_rt, tcp_listener, effective_max_conn),
+                proxy::start(proxy_rt.clone(), tcp_listener, effective_max_conn),
                 rpc::start(
-                    settings.clone(),
-                    state.clone(),
+                    proxy_rt,
                     rpc_listener,
                     log_guard.lock().unwrap().reload_handle.clone(),
                 ),
