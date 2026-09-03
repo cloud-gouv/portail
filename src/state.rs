@@ -7,13 +7,14 @@ use std::{
 };
 
 use rustls_pki_types::pem::PemObject;
+use tokio::sync::broadcast;
 use tokio_rustls::rustls::{
     RootCertStore,
     pki_types::{CertificateDer, PrivateKeyDer},
 };
 use tracing::{info, warn};
 
-use crate::config::{BackendSettings, Settings};
+use crate::{config::{BackendSettings, Settings}, rpc::fr_gouv_portail_control::Event};
 use thiserror::Error;
 
 pub struct ServerCertificates<'a> {
@@ -28,6 +29,7 @@ pub struct State {
     pub root_store: Option<Arc<tokio_rustls::rustls::RootCertStore>>,
     pub server_certificates: Option<ServerCertificates<'static>>,
     pub client_cert_resolver: Option<Arc<dyn tokio_rustls::rustls::client::ResolvesClientCert>>,
+    pub event_bus: broadcast::Sender<Event>,
 }
 
 #[derive(Debug, Error)]
@@ -152,6 +154,12 @@ impl State {
             warn!("ACL rule file disappeared from the settings file, keeping the old set of rules");
         }
     }
+
+    /// Push an event to all subscribers on the event bus.
+    /// No-op if the buffer is full or there's no subscriber.
+    pub fn emit(&self, event: Event) {
+        let _ = self.event_bus.send(event);
+    }
 }
 
 #[allow(dead_code)]
@@ -162,6 +170,7 @@ pub struct Statistics {
 }
 
 pub fn init(settings: &Settings) -> Result<State, InitError> {
+    let (event_bus, _) = broadcast::channel(2048);
     let mut state = State {
         backends: settings.backends.clone(),
         default_backend: settings.default_backend.clone(),
@@ -175,6 +184,7 @@ pub fn init(settings: &Settings) -> Result<State, InitError> {
         root_store: None,
         client_cert_resolver: None,
         server_certificates: None,
+        event_bus,
     };
 
     // Load server certificates and trust anchors for the first time.
