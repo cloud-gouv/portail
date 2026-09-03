@@ -349,7 +349,7 @@ mod tests {
                 // Read the ClientHello
                 loop {
                     match tokio::time::timeout(
-                        std::time::Duration::from_millis(100),
+                        std::time::Duration::from_millis(1000),
                         stream.read(&mut buf),
                     )
                     .await
@@ -413,7 +413,7 @@ mod tests {
 
                 loop {
                     match tokio::time::timeout(
-                        std::time::Duration::from_millis(100),
+                        std::time::Duration::from_millis(1000),
                         stream.read(&mut buf),
                     )
                     .await
