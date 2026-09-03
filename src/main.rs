@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 use std::sync::Mutex;
 use std::{path::PathBuf, sync::Arc};
 use tokio::sync::RwLock;
+use tokio_stream::StreamExt;
 use tracing::{debug, error, info, warn};
 
 use crate::logging::LogPreset;
@@ -68,6 +69,12 @@ enum RpcCommands {
 
         #[arg(long)]
         target_address: SocketAddr,
+    },
+
+    /// Subscribe to events via RPC
+    SubscribeEvents {
+        #[arg(long, default_value = "7")]
+        event_types: i64,
     },
 }
 
@@ -272,13 +279,6 @@ async fn main() -> Result<()> {
                     backend_id,
                     target_address,
                 } => {
-                    let mut connection =
-                        zlink::tokio::unix::connect(&rpc_socket)
-                            .await
-                            .context(format!(
-                                "Opening the RPC socket at path '{}'",
-                                rpc_socket.display()
-                            ))?;
                     connection
                         .update_dynamic_backend(&backend_id, DynamicBackendSpec {
                             target_address: format!("{}", target_address),
@@ -297,6 +297,27 @@ async fn main() -> Result<()> {
                             &serde_json::json!({"success": true}),
                         )
                         .context("While writing JSON")?;
+                    }
+                }
+
+                RpcCommands::SubscribeEvents { event_types } => {
+                    let mut stream = connection.subscribe_events(event_types).await.context("During Varlink low-level communications. Are you using same versions of Portail on both sides?")?;
+
+                    while let Some(item) = stream.next().await {
+                        match item {
+                            Ok(Ok(event)) => {
+                                println!("{}: {}", event.timestamp, event.message);
+                                for meta in &event.metadata {
+                                    println!("   {} = {}", meta.key, meta.value);
+                                }
+                            }
+                            Ok(Err(err)) => {
+                                eprintln!("Event stream error: {err}");
+                            }
+                            Err(transport_err) => {
+                                eprintln!("Transport stream error: {transport_err}");
+                            }
+                        }
                     }
                 }
             }
