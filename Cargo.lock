@@ -1650,6 +1650,7 @@ dependencies = [
  "criterion",
  "fast-socks5",
  "futures",
+ "futures-util",
  "hickory-resolver",
  "http",
  "http-body-util",
