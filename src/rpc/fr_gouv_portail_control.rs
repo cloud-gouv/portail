@@ -32,6 +32,7 @@ pub enum ControlError {
     InvalidLogLevel {
         reason: String,
     },
+    OnlyStreaming,
 }
 
 impl Display for ControlError {
@@ -67,6 +68,10 @@ impl Display for ControlError {
             Self::InvalidLogLevel { reason } => {
                 f.write_fmt(format_args!("Invalid log level: {}", reason))?
             }
+
+            Self::OnlyStreaming => f.write_str(
+                "This method is only available in streaming contexts (Varlink `more` flag)",
+            )?,
         }
 
         Ok(())
@@ -92,6 +97,11 @@ pub trait Control {
         backend_spec: DynamicBackendSpec,
     ) -> zlink::Result<Result<(), ControlError>>;
     async fn set_log_level(&mut self, level: &str) -> zlink::Result<Result<(), ControlError>>;
+    #[zlink(more)]
+    async fn subscribe_events(
+        &mut self,
+        filter_event_types_bitmap: i64,
+    ) -> zlink::Result<impl futures_util::Stream<Item = zlink::Result<Result<Event, ControlError>>>>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, zlink::introspect::Type)]
@@ -178,4 +188,39 @@ pub struct BackendListItem {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, zlink::introspect::Type)]
 pub struct ListBackendsOutput {
     pub backends: Vec<BackendListItem>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, zlink::introspect::Type)]
+pub struct MetadataEntry {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, zlink::introspect::Type)]
+pub struct Event {
+    pub event_type: i64,
+    pub timestamp: u64,
+    pub message: String,
+    pub trace_id: Option<String>,
+    pub metadata: Vec<MetadataEntry>,
+}
+
+impl Event {
+    pub fn new(event_type: i64, message: impl Into<String>) -> Self {
+        Event {
+            event_type,
+            timestamp: 0,
+            message: message.into(),
+            trace_id: None,
+            metadata: Vec::new(),
+        }
+    }
+
+    pub fn with_meta(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.metadata.push(MetadataEntry {
+            key: key.into(),
+            value: value.into(),
+        });
+        self
+    }
 }
