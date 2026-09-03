@@ -16,6 +16,7 @@ mod backend_routing;
 mod config;
 mod dns;
 mod events;
+mod i18n;
 mod logging;
 mod proxy;
 mod rpc;
@@ -150,6 +151,8 @@ enum Commands {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    i18n::init();
 
     match cli.command {
         Commands::Rpc {
