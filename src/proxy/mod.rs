@@ -20,6 +20,7 @@ use crate::{
     acl::ast::OwnedConcreteOperand,
     config::Settings,
     dns::DnsResolver,
+    events::event_type,
     proxy::{
         context::OwnedRequestContext,
         protocols::{DetectedProtocol, HttpVersion},
@@ -246,6 +247,10 @@ pub async fn accept_client(
                             }
                             Ok(Err(e)) => {
                                 error!(subsystem = "proxy_errors", "TLS handshake failed: {e:?}");
+                                rt.emit(Event::new(
+                                    event_type::GENERAL_ERROR,
+                                    tr::tr!("TLS handshake failed: {error}", error = e.to_string()),
+                                ));
                             }
                             Err(_elapsed) => {
                                 warn!(
