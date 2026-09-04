@@ -4,7 +4,7 @@ use std::{sync::Arc, time::Duration};
 use thiserror::Error;
 use tokio::{
     net::TcpStream,
-    sync::{RwLock, Semaphore},
+    sync::{RwLock, Semaphore, broadcast},
     time::timeout,
 };
 use tokio_rustls::{
@@ -20,10 +20,12 @@ use crate::{
     acl::ast::OwnedConcreteOperand,
     config::Settings,
     dns::DnsResolver,
+    events::event_type,
     proxy::{
         context::OwnedRequestContext,
         protocols::{DetectedProtocol, HttpVersion},
     },
+    rpc::fr_gouv_portail_control::Event,
     state::State,
 };
 
@@ -41,17 +43,26 @@ pub struct ProxyRuntime {
     pub settings: Arc<Settings>,
     pub state: Arc<RwLock<State>>,
     pub dns: Arc<DnsResolver>,
+    pub event_bus: broadcast::Sender<Event>,
 }
 
 impl ProxyRuntime {
     pub fn new(settings: Arc<Settings>, state: Arc<RwLock<State>>) -> anyhow::Result<Arc<Self>> {
         let dns = DnsResolver::from_settings(&settings.dns)?;
+        let (event_bus, _) = broadcast::channel(2048);
 
         Ok(Arc::new(Self {
             settings,
             state,
             dns,
+            event_bus,
         }))
+    }
+
+    /// Push an event to all subscribers on the event bus.
+    /// No-op if the buffer is full or there's no subscriber.
+    pub fn emit(&self, event: Event) {
+        let _ = self.event_bus.send(event);
     }
 }
 
@@ -236,6 +247,10 @@ pub async fn accept_client(
                             }
                             Ok(Err(e)) => {
                                 error!(subsystem = "proxy_errors", "TLS handshake failed: {e:?}");
+                                rt.emit(Event::new(
+                                    event_type::GENERAL_ERROR,
+                                    tr::tr!("TLS handshake failed: {error}", error = e.to_string()),
+                                ));
                             }
                             Err(_elapsed) => {
                                 warn!(

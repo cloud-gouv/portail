@@ -1,18 +1,22 @@
 use crate::{
-    config::{BackendSettings, KnownBackend, Settings},
+    config::{BackendSettings, KnownBackend},
     logging::LogReloadHandle,
+    proxy::ProxyRuntime,
     rpc::fr_gouv_portail_control::{
-        BackendListItem, ControlError, DynamicBackendSpec, GetCurrentBackendOutput,
+        BackendListItem, ControlError, DynamicBackendSpec, Event, GetCurrentBackendOutput,
         ListBackendsOutput,
     },
-    state::State,
 };
-use std::{collections::HashSet, sync::Arc};
-use tokio::{net::UnixListener, sync::RwLock};
+use std::{collections::HashSet, pin::Pin, sync::Arc};
+use tokio::net::UnixListener;
+use tokio_stream::{
+    StreamExt,
+    wrappers::{BroadcastStream, errors::BroadcastStreamRecvError::Lagged},
+};
 use tracing::{debug, info, level_filters::LevelFilter, warn};
 use tracing_subscriber::EnvFilter;
 use zlink::{
-    Server,
+    Reply, Server,
     connection::{Socket, socket::FetchPeerCredentials},
     service,
 };
@@ -34,20 +38,14 @@ fn resolve_numeric_groups_to_names(gids: Vec<zlink::connection::Gid>) -> HashSet
 }
 
 pub struct Control {
-    settings: Arc<Settings>,
-    state: Arc<RwLock<State>>,
+    rt: Arc<ProxyRuntime>,
     log_reload_handle: LogReloadHandle,
 }
 
 impl Control {
-    pub fn new(
-        settings: Arc<Settings>,
-        state: Arc<RwLock<State>>,
-        log_reload_handle: LogReloadHandle,
-    ) -> Self {
+    pub fn new(rt: Arc<ProxyRuntime>, log_reload_handle: LogReloadHandle) -> Self {
         Self {
-            settings,
-            state,
+            rt,
             log_reload_handle,
         }
     }
@@ -119,10 +117,10 @@ where
         backend_id: Option<&str>,
         #[zlink(connection)] conn: &mut zlink::Connection<Sock>,
     ) -> Result<(), ControlError> {
-        self.check_authorization(conn, self.settings.rpc.trusted_groups.iter())
+        self.check_authorization(conn, self.rt.settings.rpc.trusted_groups.iter())
             .await?;
 
-        let mut state = self.state.write().await;
+        let mut state = self.rt.state.write().await;
 
         if let Some(backend_id) = backend_id {
             if !state.backends.contains_key(backend_id) {
@@ -149,7 +147,7 @@ where
         level: &str,
         #[zlink(connection)] conn: &mut zlink::Connection<Sock>,
     ) -> Result<(), ControlError> {
-        self.check_authorization(conn, self.settings.rpc.admin_groups.iter())
+        self.check_authorization(conn, self.rt.settings.rpc.admin_groups.iter())
             .await?;
 
         let new_filter = EnvFilter::builder()
@@ -181,12 +179,12 @@ where
         backend_spec: DynamicBackendSpec,
         #[zlink(connection)] conn: &mut zlink::Connection<Sock>,
     ) -> Result<(), ControlError> {
-        self.check_authorization(conn, self.settings.rpc.admin_groups.iter())
+        self.check_authorization(conn, self.rt.settings.rpc.admin_groups.iter())
             .await?;
 
         // This is not a dynamic backend, let's bail out.
         if matches!(
-            self.settings.backends.get(backend_id),
+            self.rt.settings.backends.get(backend_id),
             Some(BackendSettings::KnownBackend(_))
         ) {
             warn!(
@@ -196,7 +194,7 @@ where
             return Err(ControlError::ImmutableBackend);
         }
 
-        let mut state = self.state.write().await;
+        let mut state = self.rt.state.write().await;
         let new_backend: KnownBackend = backend_spec.try_into()?;
 
         match state.backends.get_mut(backend_id) {
@@ -230,6 +228,7 @@ where
         debug!("Current backend read");
         GetCurrentBackendOutput {
             backend_id: self
+                .rt
                 .state
                 .read()
                 .await
@@ -241,8 +240,8 @@ where
 
     #[tracing::instrument(skip_all, fields(subsystem = "rpc"))]
     async fn list_backends(&mut self) -> ListBackendsOutput {
-        let cur_backend = self.state.read().await.default_backend.clone();
-        let backends = &self.state.read().await.backends;
+        let cur_backend = self.rt.state.read().await.default_backend.clone();
+        let backends = &self.rt.state.read().await.backends;
         debug!("Backend list read");
         ListBackendsOutput {
             backends: backends
@@ -265,7 +264,7 @@ where
                             id,
                             current,
                             dynamic: matches!(
-                                self.settings.backends.get(backend_id.as_str()).unwrap_or_else(|| panic!("Broken invariant: backend {backend_id} exists in state but not in settings")),
+                                self.rt.settings.backends.get(backend_id.as_str()).unwrap_or_else(|| panic!("Broken invariant: backend {backend_id} exists in state but not in settings")),
                                 BackendSettings::UnresolvedBackend
                             ),
                             spec: Some(known.clone().into()),
@@ -275,19 +274,62 @@ where
                 .collect(),
         }
     }
+
+    #[tracing::instrument(skip_all, fields(subsystem = "rpc"))]
+    #[zlink(more)]
+    async fn subscribe_events(
+        &mut self,
+        more: bool,
+        filter_event_types_bitmap: i64,
+        #[zlink(connection)] conn: &mut zlink::Connection<Sock>,
+    ) -> impl futures_util::Stream<Item = Result<Reply<Event>, ControlError>> {
+        let auth_result = self
+            .check_authorization(conn, self.rt.settings.rpc.trusted_groups.iter())
+            .await;
+
+        let rx = self.rt.event_bus.subscribe();
+
+        let base = BroadcastStream::new(rx).filter_map(move |result| {
+            let event = match result {
+                Ok(ev) => ev,
+                Err(Lagged(n)) => {
+                    warn!(
+                        skipped = n,
+                        subsystem = "rpc",
+                        "Event subscriber lagged, skipped events"
+                    );
+                    return None;
+                }
+            };
+
+            if (event.event_type & filter_event_types_bitmap) == 0 {
+                return None;
+            }
+
+            Some(Ok(Reply::new(Some(event))))
+        });
+
+        // Type erasure is required here because we have two different streams in the match arms.
+        let boxed_stream: Pin<
+            Box<dyn futures_util::Stream<Item = Result<Reply<Event>, ControlError>>>,
+        > = match auth_result {
+            Ok(()) if more => Box::pin(base),
+            Ok(()) => Box::pin(tokio_stream::once(Err(ControlError::OnlyStreaming))),
+            Err(e) => Box::pin(tokio_stream::once(Err(e))),
+        };
+
+        boxed_stream
+    }
 }
 
 /// Spawn a Varlink server to control the proxy server.
 pub async fn start(
-    settings: Arc<Settings>,
-    state: Arc<RwLock<State>>,
+    rt: Arc<ProxyRuntime>,
     listener: UnixListener,
     log_reload_handle: LogReloadHandle,
 ) -> anyhow::Result<()> {
-    let server: Server<zlink::tokio::unix::Listener, _> = Server::new(
-        listener.into(),
-        Control::new(settings.clone(), state.clone(), log_reload_handle),
-    );
+    let server: Server<zlink::tokio::unix::Listener, _> =
+        Server::new(listener.into(), Control::new(rt.clone(), log_reload_handle));
 
     info!("started Varlink service");
     Ok(server.run().await?)

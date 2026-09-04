@@ -37,11 +37,17 @@ tracing-appender = "0.2.5"
 hickory-resolver = { version = "^0.26", features = ["tokio"] }
 futures = "0.3.33"
 tokio-util = "0.7.19"
+futures-util = "0.3.34"
+tokio-stream = "0.1.19"
+tr = "0.1.11"
 
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }
 insta = "1.47.2"
 rand = "0.10.1"
+
+[build-dependencies]
+include-po = "0.2.1"
 
 [[bench]]
 name = "acl"
