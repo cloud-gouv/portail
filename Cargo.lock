@@ -634,7 +634,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1971,7 +1971,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2331,7 +2331,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2820,7 +2820,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3107,9 +3107,9 @@ dependencies = [
 
 [[package]]
 name = "zlink"
-version = "0.7.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd5961645cac87b613e8b3c6fb1743a567e6459bc8c1d00f7bf9884020fc98d4"
+checksum = "706aa8f0ed19681e7e95291fdea930a10485257820999797c2eb3051b22e888b"
 dependencies = [
  "zlink-core",
  "zlink-smol",
@@ -3118,9 +3118,9 @@ dependencies = [
 
 [[package]]
 name = "zlink-core"
-version = "0.7.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0314bb8bc5a5693f4625a6ea9681731a5f4bcc0a952bfca28184f268db15dcc2"
+checksum = "8f77dd6d1dc0520a668f5640fef2d51dc39df22a939e7c827019d0a2edafe3cc"
 dependencies = [
  "futures-util",
  "itoa",
@@ -3137,18 +3137,18 @@ dependencies = [
 
 [[package]]
 name = "zlink-idl"
-version = "0.7.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7990f15bd88a2b37d55c5fc13a1dd662ee98674ec9c6ac904fe46066523932a"
+checksum = "92b13734a025195596b4d855ddf1e66a5e74533564a7d1b0a8d072dd00e2c6ef"
 dependencies = [
  "winnow 0.7.15",
 ]
 
 [[package]]
 name = "zlink-macros"
-version = "0.7.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2fc623b8323797bf2d48333e7633e143077dd92cc66d9cca170014b66c43b1b5"
+checksum = "c09c588f0c465b5f17ac9ee187b34ca2b73b06c4a67c6170b856387dbede4cc7"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3158,9 +3158,9 @@ dependencies = [
 
 [[package]]
 name = "zlink-smol"
-version = "0.7.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4bc4150b8af92eb0ae7007e0ced3eb2bcf8a7fa49457de2f30b11752ea538f46"
+checksum = "62c3ee8faa545275ae31816a08455209872da51ef8a3cb46dbe97c9a5f838f34"
 dependencies = [
  "async-broadcast",
  "async-channel",
@@ -3173,9 +3173,9 @@ dependencies = [
 
 [[package]]
 name = "zlink-tokio"
-version = "0.7.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c4fe0f232dd656bcb0594e9646b86c69f6257e3d5194f28715a044c4d10c8fa"
+checksum = "d7fbaa1ec22ae711a158c85220007e8d8c5289591577729679215fce3e960747"
 dependencies = [
  "futures-util",
  "pin-project-lite",
