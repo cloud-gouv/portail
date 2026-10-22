@@ -1,3 +1,6 @@
+# This file collects ideas about what rules could be able to express (if implemented, syntax will very likely vary);
+# For a realistic example, see `rules.acl`.
+
 # Basic device trust + user group
 git.par01.corp.example.com device.trust_level=low user.group=eng -> backends=par01a,par01b,default allow
 git.par02.corp.example.com device.trust_level=low user.group=eng -> backends=par02a,par02b,default allow
