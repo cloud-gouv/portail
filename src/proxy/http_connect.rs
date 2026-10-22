@@ -3,8 +3,8 @@ use crate::backend_routing::ACLDecision;
 use crate::backend_routing::BackendOutcome;
 use crate::config::KnownBackend;
 use crate::dns::happy_eyeballs_connect;
-use crate::proxy::protocols::{ALPN_H2, ALPN_HTTP1_1};
 use crate::proxy::context::{OwnedRequestContext, normalize_host_for_acl};
+use crate::proxy::protocols::{ALPN_H2, ALPN_HTTP1_1};
 use crate::{
     proxy::{ProxyError, ProxyRuntime, client_tls},
     state::State,
@@ -205,7 +205,9 @@ async fn handle_http_request(
     debug!(subsystem = "proxy_access", final_address = %final_address,
         "HTTP CONNECT request");
 
-    let normalized_host =  if let Ok(host) = normalize_host_for_acl(target_authority.host()) { host } else {
+    let normalized_host = if let Ok(host) = normalize_host_for_acl(target_authority.host()) {
+        host
+    } else {
         error!(
             subsystem = "proxy_errors",
             "Authority cannot be normalized to ASCII, terminating connection"

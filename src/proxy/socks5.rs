@@ -173,7 +173,9 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
 
     let (host, port) = target_context.initial_target.clone().into_string_and_port();
 
-    let normalized_host =  if let Ok(host) = normalize_host_for_acl(&host) { host } else {
+    let normalized_host = if let Ok(host) = normalize_host_for_acl(&host) {
+        host
+    } else {
         error!(
             subsystem = "proxy_errors",
             "Hostname cannot be normalized to ASCII, terminating connection"
@@ -187,8 +189,10 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
         "proxy.protocol",
         crate::acl::ast::ConcreteOperand::String("socks5"),
     );
-    ctx.acl_ctx
-        .insert("host", crate::acl::ast::ConcreteOperand::String(&normalized_host));
+    ctx.acl_ctx.insert(
+        "host",
+        crate::acl::ast::ConcreteOperand::String(&normalized_host),
+    );
     ctx.acl_ctx.insert(
         "port",
         crate::acl::ast::ConcreteOperand::Number(port.into()),
