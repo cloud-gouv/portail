@@ -1,0 +1,7 @@
+# SPDX-FileCopyrightText: 2025 Julien DAUPANT <julien.dauphant@numerique.gouv.fr>
+#
+# SPDX-License-Identifier: MIT
+* @cloud-gouv/portail-owner
+  
+# All changes to .github/CODEOWNERS must be approved :
+.github/CODEOWNERS @jdauphant-admin @olebrouster-admin @swallimann-admin
