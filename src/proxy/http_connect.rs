@@ -10,8 +10,9 @@ use crate::{
     state::State,
 };
 use bytes::Bytes;
+use http::header::{CONTENT_TYPE, HeaderValue};
 use http::uri::Authority;
-use http_body_util::{BodyExt, Empty, combinators::BoxBody};
+use http_body_util::{BodyExt, Empty, Full, combinators::BoxBody};
 use hyper::{
     Method, Request, Response, StatusCode,
     body::Incoming,
@@ -20,6 +21,7 @@ use hyper::{
     service::service_fn,
 };
 use hyper_util::rt::{TokioExecutor, TokioIo};
+use std::fs;
 use std::io;
 use std::sync::Arc;
 use thiserror::Error;
@@ -60,16 +62,35 @@ fn map_acl_decision(
                 .unwrap();
             Ok(Decision::TerminateWithResponse(resp))
         }
-        ACLDecision::Deny => {
+        ACLDecision::Deny(path) => {
             info!(
                 subsystem = "proxy_access",
                 duration_us = start.elapsed().as_micros(),
                 "Request denied by ACL",
             );
-            let resp = Response::builder()
-                .status(StatusCode::FORBIDDEN)
-                .body(empty_body())
-                .unwrap();
+
+            let response_builder = Response::builder().status(StatusCode::FORBIDDEN);
+
+            let resp = (match path {
+                Some(p) => match fs::read_to_string(p) {
+                    Ok(content) => {
+                        let body = Full::<Bytes>::from(content)
+                            .map_err(|never| match never {})
+                            .boxed();
+
+                        response_builder
+                            .header(
+                                CONTENT_TYPE,
+                                HeaderValue::from_static("text/html; charset=utf-8"),
+                            )
+                            .body(body)
+                    }
+                    Err(_) => response_builder.body(empty_body()),
+                },
+                None => response_builder.body(empty_body()),
+            })
+            .unwrap();
+
             Ok(Decision::TerminateWithResponse(resp))
         }
         ACLDecision::Redirect(target) => {

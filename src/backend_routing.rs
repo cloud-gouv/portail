@@ -3,6 +3,8 @@ use std::time::Duration;
 use tokio::time::Instant;
 use tracing::{debug, warn};
 
+use std::path::PathBuf;
+
 use crate::{
     acl::{self, ACLRules},
     config::{BackendSettings, KnownBackend},
@@ -13,7 +15,7 @@ use crate::{
 #[derive(Debug, PartialEq, Eq)]
 pub enum ACLDecision {
     InternalError,
-    Deny,
+    Deny(Option<PathBuf>),
     Redirect(http::Uri),
     Allow,
 }
@@ -32,7 +34,7 @@ pub fn assess_request(ctx: &LocalRequestContext<'_>, acl: &ACLRules) -> ACLDecis
     };
 
     match assessment.action {
-        acl::Action::Deny(_) => ACLDecision::Deny,
+        acl::Action::Deny(path) => ACLDecision::Deny(path),
         acl::Action::Redirect(tgt) => ACLDecision::Redirect(tgt),
         acl::Action::Allow => ACLDecision::Allow,
     }
