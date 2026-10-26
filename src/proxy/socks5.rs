@@ -47,7 +47,7 @@ fn map_acl_decision(
     match decision {
         ACLDecision::InternalError => Ok(Decision::TerminateWithError(ReplyError::GeneralFailure)),
 
-        ACLDecision::Deny => {
+        ACLDecision::Deny(_) => {
             info!(
                 subsystem = "proxy_access",
                 target_context = ?target_context,

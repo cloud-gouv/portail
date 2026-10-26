@@ -10,8 +10,9 @@ use crate::{
     state::State,
 };
 use bytes::Bytes;
+use http::header::{CONTENT_TYPE, HeaderValue};
 use http::uri::Authority;
-use http_body_util::{BodyExt, Empty, combinators::BoxBody};
+use http_body_util::{BodyExt, Empty, Full, combinators::BoxBody};
 use hyper::{
     Method, Request, Response, StatusCode,
     body::Incoming,
@@ -20,6 +21,7 @@ use hyper::{
     service::service_fn,
 };
 use hyper_util::rt::{TokioExecutor, TokioIo};
+use std::fs;
 use std::io;
 use std::sync::Arc;
 use thiserror::Error;
@@ -54,18 +56,40 @@ fn map_acl_decision(
 ) -> Result<Decision, hyper::Error> {
     match decision {
         ACLDecision::InternalError => {
-            let mut resp = Response::new(empty_body());
-            *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+            let resp = Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(empty_body())
+                .unwrap();
             Ok(Decision::TerminateWithResponse(resp))
         }
-        ACLDecision::Deny => {
+        ACLDecision::Deny(path) => {
             info!(
                 subsystem = "proxy_access",
                 duration_us = start.elapsed().as_micros(),
                 "Request denied by ACL",
             );
-            let mut resp = Response::new(empty_body());
-            *resp.status_mut() = StatusCode::FORBIDDEN;
+
+            let response_builder = Response::builder().status(StatusCode::FORBIDDEN);
+
+            let resp = (match path {
+                Some(p) => match fs::read_to_string(p) {
+                    Ok(content) => {
+                        let body = Full::<Bytes>::from(content)
+                            .map_err(|never| match never {})
+                            .boxed();
+
+                        response_builder
+                            .header(
+                                CONTENT_TYPE,
+                                HeaderValue::from_static("text/html; charset=utf-8"),
+                            )
+                            .body(body)
+                    }
+                    Err(_) => response_builder.body(empty_body()),
+                },
+                None => response_builder.body(empty_body()),
+            })
+            .unwrap();
 
             Ok(Decision::TerminateWithResponse(resp))
         }
@@ -152,8 +176,10 @@ async fn handle_http_request(
             "Unsupported HTTP method received, terminating connection",
         );
         // TODO: we might want to handle this case in the future
-        let mut resp = Response::new(empty_body());
-        *resp.status_mut() = StatusCode::METHOD_NOT_ALLOWED;
+        let resp = Response::builder()
+            .status(StatusCode::METHOD_NOT_ALLOWED)
+            .body(empty_body())
+            .unwrap();
         return Ok(resp);
     }
 
@@ -175,8 +201,10 @@ async fn handle_http_request(
             subsystem = "proxy_errors",
             "Invalid authority in CONNECT URI, terminating connection"
         );
-        let mut resp = Response::new(empty_body());
-        *resp.status_mut() = StatusCode::BAD_REQUEST;
+        let resp = Response::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .body(empty_body())
+            .unwrap();
         return Ok(resp);
     };
 
@@ -191,8 +219,10 @@ async fn handle_http_request(
             uri = %req.uri(),
             "Rejected absolute-form CONNECT target"
         );
-        let mut resp = Response::new(empty_body());
-        *resp.status_mut() = StatusCode::BAD_REQUEST;
+        let resp = Response::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .body(empty_body())
+            .unwrap();
         return Ok(resp);
     }
 
@@ -213,8 +243,10 @@ async fn handle_http_request(
             "Authority cannot be normalized to ASCII, terminating connection"
         );
 
-        let mut resp = Response::new(empty_body());
-        *resp.status_mut() = StatusCode::BAD_REQUEST;
+        let resp = Response::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .body(empty_body())
+            .unwrap();
         return Ok(resp);
     };
 
@@ -249,8 +281,10 @@ async fn handle_http_request(
     let (mut backends, acl) = match backend_routing::build_backend_chain(&rt, &mut ctx).await {
         (Some(b), acl) => (b, acl),
         (None, _) => {
-            let mut resp = Response::new(empty_body());
-            *resp.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+            let resp = Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(empty_body())
+                .unwrap();
             return Ok(resp);
         }
     };
@@ -385,8 +419,10 @@ async fn handle_http_request(
                     duration_ms = start.elapsed().as_millis(),
                     "Direct connection target is an invalid authority",
                 );
-                let mut resp = Response::new(empty_body());
-                *resp.status_mut() = StatusCode::BAD_REQUEST;
+                let resp = Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(empty_body())
+                    .unwrap();
                 return Ok(resp);
             }
         };
@@ -427,8 +463,10 @@ async fn handle_http_request(
             "No outbound stream could be established"
         );
 
-        let mut resp = Response::new(empty_body());
-        *resp.status_mut() = StatusCode::BAD_GATEWAY;
+        let resp = Response::builder()
+            .status(StatusCode::BAD_GATEWAY)
+            .body(empty_body())
+            .unwrap();
         return Ok(resp);
     };
 
@@ -465,8 +503,10 @@ async fn handle_http_request(
     // Connection: keep-alive is
     // - the default for HTTP/1.1
     // - stripped by hyper for HTTP/2 https://github.com/hyperium/hyper/blob/e13e783927d429fc03038fe512eeb4d379cf1a70/src/proto/h2/mod.rs#L43
-    let mut resp = Response::new(empty_body());
-    *resp.status_mut() = StatusCode::OK;
+    let resp = Response::builder()
+        .status(StatusCode::OK)
+        .body(empty_body())
+        .unwrap();
 
     Ok(resp)
 }
