@@ -24,7 +24,7 @@ pub fn assess_request(ctx: &LocalRequestContext<'_>, acl: &ACLRules) -> ACLDecis
         Err(failure) => {
             warn!(
                 subsystem = "proxy_errors",
-                "Failed to evaluate a reequest: {} (context: {:#?})", failure, ctx
+                "Failed to evaluate a request: {} (context: {:#?})", failure, ctx
             );
 
             return ACLDecision::InternalError;
