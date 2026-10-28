@@ -1,0 +1,19 @@
+route internal_git01 {
+  when host in ["git.par01.corp.example.com"]
+  use ["par01a", "par01b", "default",]
+}
+
+route internal_git02 {
+  when host in ["git.par02.corp.example.com"]
+  use ["par02a", "par02b", "default",]
+}
+
+route sensitive_resources {
+  when host in ["sensitive.corp.example.com"]
+  use ["par01a",]
+}
+
+policy internal_resources {
+  when host in ["git.corp.example.com", "accounting.corp.example.com"]
+  action allow
+}
