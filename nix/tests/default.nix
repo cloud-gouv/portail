@@ -604,7 +604,7 @@ in
                     identity-aware = true;
                     tls-server-name = portailDomain;
                   };
-                  listener = {
+                  escaper = {
                     # Trust anchor for verifying the upstream (hop) TLS server certificate.
                     cacert-file = certs.proxyCerts.ca.cert;
                   };
