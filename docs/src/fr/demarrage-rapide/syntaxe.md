@@ -62,3 +62,15 @@ Les parenthèses `( )` permettent de regrouper les expressions.
 | `host` | `string` | Nom d'hôte cible | Toujours |
 | `port` | `u16` | Port cible (0–65535) | Toujours |
 | `proxy.cmd` | `string` | Commande SOCKS5 : `tcp_connect`, `udp_associate` | SOCKS5 |
+| `tunnel.protocol` | `string` | Protocole du tunnel externe : `socks5`, `http` | Toujours |
+| `tunnel.transport` | `string` | Transport externe : `tls`, `plaintext` | Toujours |
+| `tunnel.host` | `string` | Hôte cible externe canonique | Toujours |
+| `tunnel.port` | `u16` | Port cible externe | Toujours |
+| `tunnel.client.auth` | `string` | Authentification client : `none`, `mtls` | Toujours |
+| `tunnel.client.cert.subject_cn` | `string` | CN du sujet du certificat client | mTLS |
+| `tunnel.client.cert.issuer_cn` | `string` | CN de l'émetteur du certificat client | mTLS |
+| `tunnel.client.cert.serial` | `string` | Numéro de série du certificat client | mTLS |
+| `tunnel.client.cert.san_dns` | `set` | SAN DNS du certificat client | mTLS |
+| `tunnel.client.cert.san_uri` | `set` | SAN URI du certificat client | mTLS |
+| `tunnel.client.cert.san_email` | `set` | SAN email du certificat client | mTLS |
+| `tunnel.client.cert.san_ip` | `set` | SAN IP du certificat client | mTLS |

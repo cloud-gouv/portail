@@ -23,6 +23,7 @@ use crate::{
     events::event_type,
     proxy::{
         context::OwnedRequestContext,
+        identity::PeerIdentity,
         protocols::{DetectedProtocol, HttpVersion},
     },
     rpc::fr_gouv_portail_control::Event,
@@ -193,6 +194,84 @@ async fn build_tls_acceptor(
     }
 }
 
+fn insert_peer_identity(
+    stream: &tokio_rustls::server::TlsStream<TcpStream>,
+    ctx: &mut OwnedRequestContext,
+) {
+    let Some(certificates) = stream.get_ref().1.peer_certificates() else {
+        return;
+    };
+    let Some(leaf) = certificates.first() else {
+        return;
+    };
+
+    let identity = match PeerIdentity::from_der(leaf.as_ref()) {
+        Ok(identity) => identity,
+        Err(error) => {
+            warn!(
+                subsystem = "proxy_errors",
+                "Cannot parse peer certificate identity: {error}"
+            );
+            return;
+        }
+    };
+
+    if let Some(subject_cn) = identity.subject_cn {
+        ctx.acl_ctx.insert(
+            "tunnel.client.cert.subject_cn".into(),
+            OwnedConcreteOperand::String(subject_cn),
+        );
+    }
+
+    if let Some(issuer_cn) = identity.issuer_cn {
+        ctx.acl_ctx.insert(
+            "tunnel.client.cert.issuer_cn".into(),
+            OwnedConcreteOperand::String(issuer_cn),
+        );
+    }
+
+    ctx.acl_ctx.insert(
+        "tunnel.client.cert.serial".into(),
+        OwnedConcreteOperand::String(identity.serial),
+    );
+    ctx.acl_ctx.insert(
+        "tunnel.client.cert.not_before".into(),
+        OwnedConcreteOperand::Number(identity.not_before),
+    );
+    ctx.acl_ctx.insert(
+        "tunnel.client.cert.not_after".into(),
+        OwnedConcreteOperand::Number(identity.not_after),
+    );
+
+    if !identity.san_dns.is_empty() {
+        ctx.acl_ctx.insert(
+            "tunnel.client.cert.san_dns".into(),
+            OwnedConcreteOperand::Set(identity.san_dns),
+        );
+    }
+
+    if !identity.san_uri.is_empty() {
+        ctx.acl_ctx.insert(
+            "tunnel.client.cert.san_uri".into(),
+            OwnedConcreteOperand::Set(identity.san_uri),
+        );
+    }
+
+    if !identity.san_email.is_empty() {
+        ctx.acl_ctx.insert(
+            "tunnel.client.cert.san_email".into(),
+            OwnedConcreteOperand::Set(identity.san_email),
+        );
+    }
+
+    if !identity.san_ip.is_empty() {
+        ctx.acl_ctx.insert(
+            "tunnel.client.cert.san_ip".into(),
+            OwnedConcreteOperand::Set(identity.san_ip),
+        );
+    }
+}
+
 #[tracing::instrument(skip_all, fields(trace_id = %ctx.trace_id, client_address = %ctx.client_address, subsystem = "proxy_access"))]
 pub async fn accept_client(
     rt: Arc<ProxyRuntime>,
@@ -233,9 +312,12 @@ pub async fn accept_client(
                                     "client.auth".into(),
                                     OwnedConcreteOperand::String("tls".into()),
                                 );
+                                ctx.acl_ctx.insert(
+                                    "tunnel.client.auth".into(),
+                                    OwnedConcreteOperand::String("mtls".into()),
+                                );
+                                insert_peer_identity(&tls_stream, &mut ctx);
 
-                                // TODO: extract peer certificate identity information and add it
-                                // to the context.
                                 if let Err(e) = serve_authenticated_proxy(
                                     rt,
                                     ctx,
