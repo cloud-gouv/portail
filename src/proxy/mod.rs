@@ -37,6 +37,7 @@ mod http_connect;
 pub mod identity;
 mod protocols;
 mod socks5;
+pub mod target;
 
 use context::InboundStream;
 use http_connect::{serve_http1_connect, serve_http2_connect};
