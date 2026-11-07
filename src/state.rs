@@ -100,22 +100,12 @@ impl State {
             .map(load_roots)
             .transpose()?;
 
-        let backend_roots = match settings
+        let backend_roots = settings
             .escaper
             .as_ref()
             .and_then(|escaper| escaper.cacert_file.as_deref())
-        {
-            Some(path) => Some(load_roots(path)?),
-            None => {
-                if listener_roots.is_some() {
-                    warn!(
-                        "No escaper CA is configured. Reusing the listener client CA for outbound TLS."
-                    );
-                }
-
-                listener_roots.clone()
-            }
-        };
+            .map(load_roots)
+            .transpose()?;
 
         self.listener_client_roots = listener_roots;
         self.backend_roots = backend_roots;

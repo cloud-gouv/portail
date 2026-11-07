@@ -130,7 +130,7 @@ Omettre la section entière pour des connexions sortantes en clair.
 
 | Clé | Type | Défaut | Description |
 |-----|------|--------|-------------|
-| `cacert-file` | `path` | aucun | Certificat CA utilisé pour valider le certificat serveur du backend. Il est distinct de la CA du listener. |
+| `cacert-file` | `path` | aucun | Certificat CA utilisé pour valider le certificat serveur du backend. Il est distinct de la CA du listener et requis pour les backends identity-aware. |
 | `tls-privkey` | `path` | aucun | Clé privée du client pour mTLS |
 | `tls-certificate` | `path` | aucun | Certificat client présenté aux backends |
 
