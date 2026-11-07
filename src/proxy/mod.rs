@@ -7,13 +7,7 @@ use tokio::{
     sync::{RwLock, Semaphore, broadcast},
     time::timeout,
 };
-use tokio_rustls::{
-    TlsAcceptor, TlsStream,
-    rustls::{
-        ServerConfig,
-        server::{VerifierBuilderError, WebPkiClientVerifier},
-    },
-};
+use tokio_rustls::{TlsAcceptor, TlsStream};
 use tracing::{Instrument, debug, error, warn};
 
 use crate::{
@@ -35,7 +29,7 @@ pub mod context;
 pub mod host;
 mod http_connect;
 pub mod identity;
-mod protocols;
+pub(crate) mod protocols;
 mod socks5;
 pub mod stream;
 pub mod target;
@@ -155,47 +149,8 @@ async fn serve_unauthenticated_proxy(
     Ok(())
 }
 
-#[derive(Debug, Error)]
-enum ServerTLSConfigError {
-    #[error("Setting the single certificates failed: {0}")]
-    ServerCertificateConfigError(#[from] tokio_rustls::rustls::Error),
-    #[error("Client verifier construction failed: {0}")]
-    ClientVerifierBuilderError(#[from] VerifierBuilderError),
-}
-
-async fn build_tls_acceptor(
-    settings: &Settings,
-    state: Arc<RwLock<State>>,
-) -> Result<Option<TlsAcceptor>, ServerTLSConfigError> {
-    if settings.listener.is_some() {
-        let state = state.read().await;
-        let config = ServerConfig::builder();
-
-        let config = if let Some(ref roots) = state.listener_client_roots {
-            config.with_client_cert_verifier(
-                // TODO: support unauthenticated.
-                WebPkiClientVerifier::builder(roots.clone()).build()?,
-            )
-        } else {
-            config.with_no_client_auth()
-        };
-
-        if let Some(ref server_certs) = state.server_certificates {
-            let mut config = config.with_single_cert(
-                server_certs.cert_chain.clone(),
-                server_certs.private_key.clone_key(),
-            )?;
-            config.alpn_protocols = vec![
-                protocols::ALPN_H2.to_vec(),
-                protocols::ALPN_HTTP1_1.to_vec(),
-            ];
-            Ok(Some(TlsAcceptor::from(Arc::new(config))))
-        } else {
-            Ok(None)
-        }
-    } else {
-        Ok(None)
-    }
+fn build_tls_acceptor(state: &State) -> Option<TlsAcceptor> {
+    state.listener_tls_config.clone().map(TlsAcceptor::from)
 }
 
 fn insert_peer_identity(
@@ -412,8 +367,10 @@ pub async fn start(
 ) -> anyhow::Result<()> {
     use nix::errno::Errno;
     use std::io::ErrorKind;
-    let tls_acceptor: Option<TlsAcceptor> =
-        build_tls_acceptor(&rt.settings, rt.state.clone()).await?;
+    let tls_acceptor: Option<TlsAcceptor> = {
+        let state = rt.state.read().await;
+        build_tls_acceptor(&state)
+    };
 
     let conn_semaphore = Arc::new(Semaphore::new(max_connections.min(Semaphore::MAX_PERMITS)));
 

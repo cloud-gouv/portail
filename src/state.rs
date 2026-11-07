@@ -9,8 +9,9 @@ use std::{
 
 use rustls_pki_types::pem::PemObject;
 use tokio_rustls::rustls::{
-    RootCertStore,
+    RootCertStore, ServerConfig,
     pki_types::{CertificateDer, PrivateKeyDer},
+    server::{VerifierBuilderError, WebPkiClientVerifier},
 };
 use tracing::{info, warn};
 
@@ -31,6 +32,7 @@ pub struct State {
     /// Trust anchors for outbound backend TLS connections.
     pub backend_roots: Option<Arc<tokio_rustls::rustls::RootCertStore>>,
     pub server_certificates: Option<ServerCertificates<'static>>,
+    pub listener_tls_config: Option<Arc<ServerConfig>>,
     pub client_cert_resolver: Option<Arc<dyn tokio_rustls::rustls::client::ResolvesClientCert>>,
 }
 
@@ -63,11 +65,21 @@ pub enum ReloadServerCertificateError {
 }
 
 #[derive(Debug, Error)]
+pub enum ReloadListenerTlsError {
+    #[error("Setting the single certificates failed: {0}")]
+    ServerCertificateConfigError(#[from] tokio_rustls::rustls::Error),
+    #[error("Client verifier construction failed: {0}")]
+    ClientVerifierBuilderError(#[from] VerifierBuilderError),
+}
+
+#[derive(Debug, Error)]
 pub enum InitError {
     #[error("Failed to load server certificates: {0}")]
     LoadServerCertificatesError(#[from] ReloadServerCertificateError),
     #[error("Failed to load trust anchors: {0}")]
     LoadTrustAnchorError(#[from] ReloadTrustAnchorError),
+    #[error("Failed to build listener TLS configuration: {0}")]
+    LoadListenerTlsConfigError(#[from] ReloadListenerTlsError),
     #[error("Missing ACL filter file")]
     MissingACLFile,
     #[error("Failed to load ACL: {0}")]
@@ -150,6 +162,32 @@ impl State {
         Ok(false)
     }
 
+    pub fn reload_listener_tls_config(&mut self) -> Result<(), ReloadListenerTlsError> {
+        let Some(ref server_certificates) = self.server_certificates else {
+            self.listener_tls_config = None;
+            return Ok(());
+        };
+
+        let config = if let Some(ref roots) = self.listener_client_roots {
+            ServerConfig::builder()
+                .with_client_cert_verifier(WebPkiClientVerifier::builder(roots.clone()).build()?)
+        } else {
+            ServerConfig::builder().with_no_client_auth()
+        };
+
+        let mut config = config.with_single_cert(
+            server_certificates.cert_chain.clone(),
+            server_certificates.private_key.clone_key(),
+        )?;
+        config.alpn_protocols = vec![
+            crate::proxy::protocols::ALPN_H2.to_vec(),
+            crate::proxy::protocols::ALPN_HTTP1_1.to_vec(),
+        ];
+
+        self.listener_tls_config = Some(Arc::new(config));
+        Ok(())
+    }
+
     #[allow(dead_code)]
     pub fn reload_client_certs(&self) {}
 
@@ -193,11 +231,14 @@ pub fn init(settings: &Settings) -> Result<State, InitError> {
         )?,
         listener_client_roots: None,
         backend_roots: None,
+        listener_tls_config: None,
         client_cert_resolver: None,
         server_certificates: None,
     };
 
-    // Load server certificates and trust anchors for the first time.
+    state.reload_trust_anchors(settings)?;
+
+    // Load server certificates for the first time.
     if state.reload_server_certs(settings)? {
         info!("TLS listener is configured and available on this proxy.");
     } else {
@@ -206,7 +247,53 @@ pub fn init(settings: &Settings) -> Result<State, InitError> {
         );
     }
 
-    state.reload_trust_anchors(settings)?;
+    state.reload_listener_tls_config()?;
 
     Ok(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
+
+    use super::*;
+
+    #[test]
+    fn builds_listener_tls_config() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let cert_path = root.join("nix/tests/certs/portail.corp/portail.corp.example.com.cert.pem");
+        let key_path = root.join("nix/tests/certs/portail.corp/portail.corp.example.com.key.pem");
+
+        let mut cert_reader = BufReader::new(std::fs::File::open(cert_path).unwrap());
+        let cert_chain: Vec<CertificateDer<'static>> =
+            CertificateDer::pem_reader_iter(&mut cert_reader)
+                .collect::<Result<_, _>>()
+                .unwrap();
+        let private_key = PrivateKeyDer::from_pem_file(key_path).unwrap();
+
+        let mut state = State {
+            backends: HashMap::new(),
+            default_backend: None,
+            acl_rules: crate::acl::ACLRules {
+                hir: crate::acl::hir::ACLHir {
+                    routes: Vec::new(),
+                    policies: Vec::new(),
+                },
+            },
+            listener_client_roots: None,
+            backend_roots: None,
+            server_certificates: Some(ServerCertificates {
+                cert_chain,
+                private_key,
+            }),
+            listener_tls_config: None,
+            client_cert_resolver: None,
+        };
+
+        state.reload_listener_tls_config().unwrap();
+
+        assert!(state.listener_tls_config.is_some());
+    }
 }
