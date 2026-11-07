@@ -3,6 +3,7 @@
 use std::{
     collections::HashMap,
     io::BufReader,
+    path::Path,
     sync::{Arc, atomic::AtomicUsize},
 };
 
@@ -25,7 +26,10 @@ pub struct State {
     pub backends: HashMap<String, BackendSettings>,
     pub default_backend: Option<String>,
     pub acl_rules: crate::acl::ACLRules,
-    pub root_store: Option<Arc<tokio_rustls::rustls::RootCertStore>>,
+    /// Trust anchors for inbound client certificates on the listener.
+    pub listener_client_roots: Option<Arc<tokio_rustls::rustls::RootCertStore>>,
+    /// Trust anchors for outbound backend TLS connections.
+    pub backend_roots: Option<Arc<tokio_rustls::rustls::RootCertStore>>,
     pub server_certificates: Option<ServerCertificates<'static>>,
     pub client_cert_resolver: Option<Arc<dyn tokio_rustls::rustls::client::ResolvesClientCert>>,
 }
@@ -70,26 +74,51 @@ pub enum InitError {
     LoadACLError(#[from] crate::acl::LoadError),
 }
 
+fn load_roots(path: &Path) -> Result<Arc<RootCertStore>, ReloadTrustAnchorError> {
+    let mut ca_file = BufReader::new(std::fs::File::open(path)?);
+    let certs: Vec<_> = CertificateDer::pem_reader_iter(&mut ca_file)
+        .map(|item| item.map_err(|_| MaterialError::SectionParsingError))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut roots = RootCertStore::empty();
+    for cert in certs {
+        roots.add(cert)?;
+    }
+
+    Ok(Arc::new(roots))
+}
+
 impl State {
     pub fn reload_trust_anchors(
         &mut self,
         settings: &Settings,
     ) -> Result<(), ReloadTrustAnchorError> {
-        if let Some(ref listener) = settings.listener
-            && let Some(ref client_ca) = listener.cacert_file
+        let listener_roots = settings
+            .listener
+            .as_ref()
+            .and_then(|listener| listener.cacert_file.as_deref())
+            .map(load_roots)
+            .transpose()?;
+
+        let backend_roots = match settings
+            .escaper
+            .as_ref()
+            .and_then(|escaper| escaper.cacert_file.as_deref())
         {
-            let mut ca_file = BufReader::new(std::fs::File::open(client_ca)?);
-            let certs: Vec<_> = CertificateDer::pem_reader_iter(&mut ca_file)
-                .map(|item| item.map_err(|_| MaterialError::SectionParsingError))
-                .collect::<Result<Vec<_>, _>>()?;
+            Some(path) => Some(load_roots(path)?),
+            None => {
+                if listener_roots.is_some() {
+                    warn!(
+                        "No escaper CA is configured. Reusing the listener client CA for outbound TLS."
+                    );
+                }
 
-            let mut roots = RootCertStore::empty();
-            for cert in certs {
-                roots.add(cert)?;
+                listener_roots.clone()
             }
+        };
 
-            self.root_store = Some(Arc::new(roots));
-        }
+        self.listener_client_roots = listener_roots;
+        self.backend_roots = backend_roots;
 
         Ok(())
     }
@@ -172,7 +201,8 @@ pub fn init(settings: &Settings) -> Result<State, InitError> {
                 .ok_or(InitError::MissingACLFile)?,
             settings,
         )?,
-        root_store: None,
+        listener_client_roots: None,
+        backend_roots: None,
         client_cert_resolver: None,
         server_certificates: None,
     };

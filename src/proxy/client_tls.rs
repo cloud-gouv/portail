@@ -27,7 +27,10 @@ pub async fn connect_using_tls_auth<IO: AsyncRead + AsyncWrite + Unpin>(
     let config = {
         let state = state.read().await;
 
-        let mut config = match (state.root_store.clone(), state.client_cert_resolver.clone()) {
+        let mut config = match (
+            state.backend_roots.clone(),
+            state.client_cert_resolver.clone(),
+        ) {
             (Some(root_store), Some(cert_resolver)) => ClientConfig::builder()
                 .with_root_certificates(root_store)
                 .with_client_cert_resolver(cert_resolver),
@@ -40,7 +43,7 @@ pub async fn connect_using_tls_auth<IO: AsyncRead + AsyncWrite + Unpin>(
             (None, None) => {
                 // TODO: use the webpki by default.
                 return Err(tokio::io::Error::other(
-                    "No TLS trust anchors configured for identity-aware backend",
+                    "No backend TLS trust anchors configured for identity-aware backend",
                 ));
             }
         };

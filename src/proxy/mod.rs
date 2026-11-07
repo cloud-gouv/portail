@@ -165,7 +165,7 @@ async fn build_tls_acceptor(
         let state = state.read().await;
         let config = ServerConfig::builder();
 
-        let config = if let Some(ref roots) = state.root_store {
+        let config = if let Some(ref roots) = state.listener_client_roots {
             config.with_client_cert_verifier(
                 // TODO: support unauthenticated.
                 WebPkiClientVerifier::builder(roots.clone()).build()?,

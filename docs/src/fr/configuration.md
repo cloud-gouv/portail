@@ -121,6 +121,7 @@ Omettre la section entière pour des connexions locales en clair.
 | `tls-chain` | `path` | aucun | Chaîne de certificats du serveur présentée aux clients |
 
 Quand les trois sont définis, Portail exige et valide les certificats clients via mTLS.
+La CA du listener sert uniquement à l'authentification des clients entrants.
 
 ### `[escaper]` (TLS sortant)
 
@@ -129,7 +130,7 @@ Omettre la section entière pour des connexions sortantes en clair.
 
 | Clé | Type | Défaut | Description |
 |-----|------|--------|-------------|
-| `cacert-file` | `path` | aucun | Certificat CA utilisé pour valider le certificat serveur du backend |
+| `cacert-file` | `path` | aucun | Certificat CA utilisé pour valider le certificat serveur du backend. Il est distinct de la CA du listener. |
 | `tls-privkey` | `path` | aucun | Clé privée du client pour mTLS |
 | `tls-certificate` | `path` | aucun | Certificat client présenté aux backends |
 
