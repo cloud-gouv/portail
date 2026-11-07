@@ -405,20 +405,7 @@ async fn handle_http_request(
         TunnelProtocol::Http,
     );
 
-    tokio::task::spawn(
-        async move {
-            match hyper::upgrade::on(req).await {
-                Ok(upgraded) => {
-                    let client = TokioIo::new(upgraded);
-                    if let Err(error) = serve_passthrough(&tunnel_ctx, client, stream).await {
-                        error!(subsystem = "proxy_errors", "CONNECT tunnel error: {error}");
-                    }
-                }
-                Err(e) => error!(subsystem = "proxy_errors", "CONNECT upgrade error: {}", e),
-            }
-        }
-        .in_current_span(),
-    );
+    spawn_tunnel(req, tunnel_ctx, stream);
 
     // Connection: keep-alive is
     // - the default for HTTP/1.1
@@ -507,6 +494,23 @@ async fn connect_to_http_backends(
         Some(Err(resp)) => Some(Err(resp)),
         None => None,
     }
+}
+
+fn spawn_tunnel(req: Request<Incoming>, tunnel_ctx: TunnelContext, stream: OutboundStream) {
+    tokio::task::spawn(
+        async move {
+            match hyper::upgrade::on(req).await {
+                Ok(upgraded) => {
+                    let client = TokioIo::new(upgraded);
+                    if let Err(error) = serve_passthrough(&tunnel_ctx, client, stream).await {
+                        error!(subsystem = "proxy_errors", "CONNECT tunnel error: {error}");
+                    }
+                }
+                Err(e) => error!(subsystem = "proxy_errors", "CONNECT upgrade error: {}", e),
+            }
+        }
+        .in_current_span(),
+    );
 }
 
 fn empty_body() -> BoxBody<Bytes, hyper::Error> {
