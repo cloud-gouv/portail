@@ -24,7 +24,7 @@ use crate::{
     proxy::{
         ProxyRuntime,
         context::{OwnedRequestContext, TargetContext},
-        host::normalize_host_for_acl,
+        host::CanonicalHost,
     },
 };
 
@@ -183,7 +183,7 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
 
     let (host, port) = target_context.initial_target.clone().into_string_and_port();
 
-    let normalized_host = if let Ok(host) = normalize_host_for_acl(&host) {
+    let normalized_host = if let Ok(host) = CanonicalHost::parse(&host) {
         host
     } else {
         error!(
@@ -205,11 +205,11 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
     );
     ctx.acl_ctx.insert(
         "host",
-        crate::acl::ast::ConcreteOperand::String(&normalized_host),
+        crate::acl::ast::ConcreteOperand::String(normalized_host.as_str()),
     );
     ctx.acl_ctx.insert(
         "tunnel.host",
-        crate::acl::ast::ConcreteOperand::String(&normalized_host),
+        crate::acl::ast::ConcreteOperand::String(normalized_host.as_str()),
     );
     ctx.acl_ctx.insert(
         "port",
