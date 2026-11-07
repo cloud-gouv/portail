@@ -4,7 +4,11 @@ use crate::backend_routing::BackendOutcome;
 use crate::config::KnownBackend;
 use crate::dns::happy_eyeballs_connect;
 use crate::proxy::protocols::{ALPN_H2, ALPN_HTTP1_1};
-use crate::proxy::{context::OwnedRequestContext, target::TargetAuthority};
+use crate::proxy::{
+    context::OwnedRequestContext,
+    target::TargetAuthority,
+    tunnel::{TunnelContext, TunnelProtocol, serve_passthrough},
+};
 use crate::{
     proxy::{ProxyError, ProxyRuntime, client_tls},
     state::State,
@@ -433,7 +437,7 @@ async fn handle_http_request(
         }
     }
 
-    let Some(mut stream) = stream else {
+    let Some(stream) = stream else {
         warn!(
             subsystem = "proxy_errors",
             address = %final_address,
@@ -445,28 +449,21 @@ async fn handle_http_request(
         return Ok(resp);
     };
 
+    let tunnel_ctx = TunnelContext::new(
+        initial_ctx.trace_id,
+        initial_ctx.client_address,
+        target.clone(),
+        initial_ctx.client_transport,
+        TunnelProtocol::Http,
+    );
+
     tokio::task::spawn(
         async move {
-            let start = Instant::now();
             match hyper::upgrade::on(req).await {
                 Ok(upgraded) => {
-                    let mut client = TokioIo::new(upgraded);
-                    match tokio::io::copy_bidirectional(&mut client, &mut *stream).await {
-                        Err(e) => error!(
-                            subsystem = "proxy_errors",
-                            duration_ms = start.elapsed().as_millis(),
-                            "CONNECT tunnel error: {}",
-                            e
-                        ),
-                        Ok((n_bytes_sent, n_bytes_recv)) => {
-                            info!(
-                                subsystem = "proxy_access",
-                                n_bytes_sent = %n_bytes_sent,
-                                n_bytes_recv = %n_bytes_recv,
-                                duration_ms = start.elapsed().as_millis(),
-                                "CONNECT tunnel finished successfully"
-                            );
-                        }
+                    let client = TokioIo::new(upgraded);
+                    if let Err(error) = serve_passthrough(&tunnel_ctx, client, stream).await {
+                        error!(subsystem = "proxy_errors", "CONNECT tunnel error: {error}");
                     }
                 }
                 Err(e) => error!(subsystem = "proxy_errors", "CONNECT upgrade error: {}", e),

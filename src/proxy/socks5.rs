@@ -25,6 +25,7 @@ use crate::{
         ProxyRuntime,
         context::{OwnedRequestContext, TargetContext},
         target::TargetAuthority,
+        tunnel::{TunnelContext, TunnelProtocol, serve_passthrough},
     },
 };
 
@@ -130,6 +131,7 @@ pub async fn connect_to_backend(
 }
 
 pub async fn route_to_backend<S: AsyncRead + Unpin + AsyncWrite>(
+    tunnel_ctx: &TunnelContext,
     outbound_stream: OutboundSock5Stream,
     protocol: Socks5ServerProtocol<S, fast_socks5::server::states::CommandRead>,
 ) -> Result<(), SocksError> {
@@ -138,11 +140,13 @@ pub async fn route_to_backend<S: AsyncRead + Unpin + AsyncWrite>(
         .await?;
 
     match outbound_stream {
-        OutboundSock5Stream::Tls(s) => fast_socks5::server::transfer(inner, s).await,
-        OutboundSock5Stream::Plain(s) => fast_socks5::server::transfer(inner, s).await,
+        OutboundSock5Stream::Tls(stream) => serve_passthrough(tunnel_ctx, inner, stream)
+            .await
+            .map_err(SocksError::Io),
+        OutboundSock5Stream::Plain(stream) => serve_passthrough(tunnel_ctx, inner, stream)
+            .await
+            .map_err(SocksError::Io),
     }
-
-    Ok(())
 }
 
 #[tracing::instrument(skip_all, fields(trace_id = %ctx.trace_id, client_address = %ctx.client_address, subsystem = "proxy_access"))]
@@ -201,6 +205,14 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
             return Err(ReplyError::ConnectionNotAllowed.into());
         }
     };
+
+    let tunnel_ctx = TunnelContext::new(
+        ctx.trace_id,
+        ctx.client_address,
+        target.clone(),
+        ctx.client_transport,
+        TunnelProtocol::Socks5,
+    );
 
     let mut ctx = ctx.as_local();
     ctx.acl_ctx.insert(
@@ -307,7 +319,7 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
     {
         Some(Ok((stream, _backend))) => {
             let start = Instant::now();
-            route_to_backend(stream, proto).await?;
+            route_to_backend(&tunnel_ctx, stream, proto).await?;
             debug!(
                 subsystem = "proxy_access",
                 duration_ms = start.elapsed().as_millis(),
@@ -408,7 +420,9 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
                 let inner = proto
                     .reply_success(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0))
                     .await?;
-                fast_socks5::server::transfer(inner, stream).await;
+                serve_passthrough(&tunnel_ctx, inner, stream)
+                    .await
+                    .map_err(SocksError::Io)?;
             }
 
             // TODO: enable with ACL rules evaluation
