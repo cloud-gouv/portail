@@ -7,9 +7,44 @@ use tokio::{
 
 use tokio_rustls::{
     TlsConnector, TlsStream,
-    rustls::{ClientConfig, pki_types::ServerName},
+    rustls::{ClientConfig, RootCertStore, client::ResolvesClientCert, pki_types::ServerName},
 };
 use tracing::debug;
+
+/// TLS material for outbound backend connections.
+pub struct BackendTlsConfig {
+    roots: Arc<RootCertStore>,
+    client_cert_resolver: Option<Arc<dyn ResolvesClientCert>>,
+}
+
+impl BackendTlsConfig {
+    fn from_state(state: &crate::state::State) -> Result<Self, tokio::io::Error> {
+        let Some(roots) = state.backend_roots.clone() else {
+            return Err(tokio::io::Error::other(
+                "No backend TLS trust anchors configured for identity-aware backend",
+            ));
+        };
+
+        Ok(Self {
+            roots,
+            client_cert_resolver: state.client_cert_resolver.clone(),
+        })
+    }
+
+    fn client_config(&self, alpn_protocols: Vec<Vec<u8>>) -> ClientConfig {
+        let mut config = match self.client_cert_resolver.clone() {
+            Some(cert_resolver) => ClientConfig::builder()
+                .with_root_certificates(self.roots.clone())
+                .with_client_cert_resolver(cert_resolver),
+            None => ClientConfig::builder()
+                .with_root_certificates(self.roots.clone())
+                .with_no_client_auth(),
+        };
+
+        config.alpn_protocols = alpn_protocols;
+        config
+    }
+}
 
 /// This connects to a target server using a mTLS mechanism.
 /// The roots and client certs are fetched from the state where
@@ -26,30 +61,7 @@ pub async fn connect_using_tls_auth<IO: AsyncRead + AsyncWrite + Unpin>(
 ) -> Result<TlsStream<IO>, tokio::io::Error> {
     let config = {
         let state = state.read().await;
-
-        let mut config = match (
-            state.backend_roots.clone(),
-            state.client_cert_resolver.clone(),
-        ) {
-            (Some(root_store), Some(cert_resolver)) => ClientConfig::builder()
-                .with_root_certificates(root_store)
-                .with_client_cert_resolver(cert_resolver),
-            (Some(root_store), None) => ClientConfig::builder()
-                .with_root_certificates(root_store)
-                .with_no_client_auth(),
-            (None, Some(_)) => {
-                return Err(tokio::io::Error::other("Client auth set without roots"));
-            }
-            (None, None) => {
-                // TODO: use the webpki by default.
-                return Err(tokio::io::Error::other(
-                    "No backend TLS trust anchors configured for identity-aware backend",
-                ));
-            }
-        };
-
-        config.alpn_protocols = alpn_protocols;
-        config
+        BackendTlsConfig::from_state(&state)?.client_config(alpn_protocols)
     };
 
     let connector = TlsConnector::from(Arc::new(config));
