@@ -461,7 +461,7 @@ async fn connect_to_http_backends(
                                 "Backend returned a non-200 client error for HTTP CONNECT, returning it to the client and terminating the request"
                             );
 
-                            BackendOutcome::Fatal(resp.map(|b| b.boxed()))
+                            BackendOutcome::Fatal((*resp).map(|b| b.boxed()))
                         } else {
                             info!(
                                 subsystem = "proxy_access",
@@ -524,7 +524,7 @@ pub enum UpstreamConnectError {
     #[error("An IO error occurred: {0}")]
     IO(#[from] std::io::Error),
     #[error("The upstream response contains an error")]
-    UpstreamResponse(hyper::Response<Incoming>),
+    UpstreamResponse(Box<hyper::Response<Incoming>>),
 }
 
 /// Send CONNECT and return the stream on 2xx response
@@ -606,7 +606,7 @@ async fn connect_to_http_proxy_backend(
             .map_err(io::Error::other)?;
 
         if !response.status().is_success() {
-            return Err(UpstreamConnectError::UpstreamResponse(response));
+            return Err(UpstreamConnectError::UpstreamResponse(Box::new(response)));
         }
 
         let upgraded = hyper::upgrade::on(&mut response)
@@ -636,7 +636,7 @@ async fn connect_to_http_proxy_backend(
             .map_err(io::Error::other)?;
 
         if !response.status().is_success() {
-            return Err(UpstreamConnectError::UpstreamResponse(response));
+            return Err(UpstreamConnectError::UpstreamResponse(Box::new(response)));
         }
 
         let upgraded = hyper::upgrade::on(&mut response)
