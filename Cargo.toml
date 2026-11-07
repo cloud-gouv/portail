@@ -41,6 +41,7 @@ futures-util = "0.3.34"
 tokio-stream = "0.1.19"
 tr = "0.1.11"
 idna = "^1"
+x509-parser = "0.18"
 
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }
