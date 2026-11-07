@@ -23,7 +23,8 @@ use crate::{
     dns::{DnsError, HappyEyeballsError, happy_eyeballs_connect},
     proxy::{
         ProxyRuntime,
-        context::{OwnedRequestContext, TargetContext, normalize_host_for_acl},
+        context::{OwnedRequestContext, TargetContext},
+        host::normalize_host_for_acl,
     },
 };
 

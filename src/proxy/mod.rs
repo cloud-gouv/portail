@@ -32,6 +32,7 @@ use crate::{
 
 mod client_tls;
 pub mod context;
+pub mod host;
 mod http_connect;
 pub mod identity;
 mod protocols;
