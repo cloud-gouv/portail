@@ -45,6 +45,45 @@ enum InboundHttpProtocol {
     Http2,
 }
 
+const CONNECT_DEFAULT_PORT: u16 = 443;
+
+#[derive(Debug, thiserror::Error)]
+enum ConnectTargetError {
+    #[error("The CONNECT URI has no authority")]
+    MissingAuthority,
+    #[error("The CONNECT URI uses absolute form")]
+    AbsoluteForm,
+    #[error(transparent)]
+    InvalidAuthority(#[from] crate::proxy::target::TargetAuthorityError),
+}
+
+/// The CONNECT target, both as the client wrote it and in canonical form.
+///
+/// The two differ on purpose: ACL evaluation and dialing use the canonical host, while logs and
+/// the HTTP/2 `:authority` echo must show what the client asked for.
+struct ConnectTarget {
+    authority: Authority,
+    target: TargetAuthority,
+}
+
+fn parse_connect_target(uri: &http::Uri) -> Result<ConnectTarget, ConnectTargetError> {
+    if uri.scheme().is_some() {
+        return Err(ConnectTargetError::AbsoluteForm);
+    }
+
+    let Some(authority) = uri.authority() else {
+        return Err(ConnectTargetError::MissingAuthority);
+    };
+
+    let target = TargetAuthority::parse(authority, CONNECT_DEFAULT_PORT)
+        .map_err(ConnectTargetError::from)?;
+
+    Ok(ConnectTarget {
+        authority: authority.clone(),
+        target,
+    })
+}
+
 enum Decision {
     TerminateWithResponse(Response<BoxBody<Bytes, hyper::Error>>),
     RedirectDestination(String),
@@ -178,41 +217,15 @@ async fn handle_http_request(
         crate::acl::ast::ConcreteOperand::String("http"),
     );
 
-    let Some(target_authority) = req.uri().authority() else {
-        debug!(
-            subsystem = "proxy_errors",
-            "Invalid authority in CONNECT URI, terminating connection"
-        );
-        let mut resp = Response::new(empty_body());
-        *resp.status_mut() = StatusCode::BAD_REQUEST;
-        return Ok(resp);
-    };
-
-    // Reject non-authority-form CONNECT targets.
-    // Absolute form (https://host:port/path) lets the client control the scheme, path and query
-    // that ACL sees. But those are not accurate. They do not constrain the actual tunnel.
-    // Per RFC 7231, §4.3.6, CONNECT targets MUST use authority-form.
-
-    if req.uri().scheme().is_some() {
-        error!(
-            subsystem = "proxy_errors",
-            uri = %req.uri(),
-            "Rejected absolute-form CONNECT target"
-        );
-        let mut resp = Response::new(empty_body());
-        *resp.status_mut() = StatusCode::BAD_REQUEST;
-        return Ok(resp);
-    }
-
-    // We decided the default port for CONNECT is 443.
-    const CONNECT_DEFAULT_PORT: u16 = 443;
-
-    let target = match TargetAuthority::parse(target_authority, CONNECT_DEFAULT_PORT) {
+    // CONNECT targets must use authority form. Absolute form lets the client control the
+    // scheme, path, and query that the ACL sees.
+    let ConnectTarget { authority, target } = match parse_connect_target(req.uri()) {
         Ok(target) => target,
         Err(error) => {
             error!(
                 subsystem = "proxy_errors",
-                "Authority cannot be normalized to ASCII, terminating connection: {error}"
+                uri = %req.uri(),
+                "Rejected CONNECT target: {error}"
             );
 
             let mut resp = Response::new(empty_body());
@@ -274,7 +287,7 @@ async fn handle_http_request(
     match map_acl_decision(
         backend_routing::assess_request(&ctx, &acl),
         start,
-        target_authority,
+        &authority,
     )? {
         Decision::TerminateWithResponse(resp) => return Ok(resp),
         Decision::RedirectDestination(target) => final_address = target,
@@ -372,7 +385,7 @@ async fn handle_http_request(
         match map_acl_decision(
             backend_routing::assess_request(&ctx, &acl),
             start,
-            target_authority,
+            &authority,
         )? {
             Decision::TerminateWithResponse(resp) => return Ok(resp),
             Decision::RedirectDestination(target) => final_address = target,
@@ -612,5 +625,46 @@ async fn connect_to_http_proxy_backend(
             .map_err(io::Error::other)?;
 
         Ok(Box::new(TokioIo::new(upgraded)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn uri(value: &str) -> http::Uri {
+        value.parse().unwrap()
+    }
+
+    #[test]
+    fn parses_authority_form_with_default_port() {
+        let ConnectTarget { target, .. } = parse_connect_target(&uri("example.com")).unwrap();
+        assert_eq!(target.host.as_str(), "example.com");
+        assert_eq!(target.port, CONNECT_DEFAULT_PORT);
+        assert!(!target.explicit_port);
+    }
+
+    #[test]
+    fn parses_authority_form_with_explicit_port() {
+        let ConnectTarget { target, .. } = parse_connect_target(&uri("example.com:8443")).unwrap();
+        assert_eq!(target.host.as_str(), "example.com");
+        assert_eq!(target.port, 8443);
+        assert!(target.explicit_port);
+    }
+
+    #[test]
+    fn rejects_absolute_form() {
+        assert!(matches!(
+            parse_connect_target(&uri("https://example.com:443/")),
+            Err(ConnectTargetError::AbsoluteForm)
+        ));
+    }
+
+    #[test]
+    fn rejects_missing_authority() {
+        assert!(matches!(
+            parse_connect_target(&uri("/")),
+            Err(ConnectTargetError::MissingAuthority)
+        ));
     }
 }
