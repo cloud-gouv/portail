@@ -169,6 +169,10 @@ async fn handle_http_request(
         "proxy.protocol",
         crate::acl::ast::ConcreteOperand::String("http"),
     );
+    ctx.acl_ctx.insert(
+        "tunnel.protocol",
+        crate::acl::ast::ConcreteOperand::String("http"),
+    );
 
     let Some(target_authority) = req.uri().authority() else {
         debug!(
@@ -222,9 +226,17 @@ async fn handle_http_request(
         "host",
         crate::acl::ast::ConcreteOperand::String(&normalized_host),
     );
+    ctx.acl_ctx.insert(
+        "tunnel.host",
+        crate::acl::ast::ConcreteOperand::String(&normalized_host),
+    );
 
     ctx.acl_ctx.insert(
         "port",
+        crate::acl::ast::ConcreteOperand::Number(port.into()),
+    );
+    ctx.acl_ctx.insert(
+        "tunnel.port",
         crate::acl::ast::ConcreteOperand::Number(port.into()),
     );
     ctx.acl_ctx.insert(

@@ -199,11 +199,23 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
         crate::acl::ast::ConcreteOperand::String("socks5"),
     );
     ctx.acl_ctx.insert(
+        "tunnel.protocol",
+        crate::acl::ast::ConcreteOperand::String("socks5"),
+    );
+    ctx.acl_ctx.insert(
         "host",
         crate::acl::ast::ConcreteOperand::String(&normalized_host),
     );
     ctx.acl_ctx.insert(
+        "tunnel.host",
+        crate::acl::ast::ConcreteOperand::String(&normalized_host),
+    );
+    ctx.acl_ctx.insert(
         "port",
+        crate::acl::ast::ConcreteOperand::Number(port.into()),
+    );
+    ctx.acl_ctx.insert(
+        "tunnel.port",
         crate::acl::ast::ConcreteOperand::Number(port.into()),
     );
 

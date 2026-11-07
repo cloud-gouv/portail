@@ -56,10 +56,26 @@ pub struct TargetContext {
     pub initial_target: TargetAddr,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientTransport {
+    Tls,
+    Plaintext,
+}
+
+impl ClientTransport {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Tls => "tls",
+            Self::Plaintext => "plaintext",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct OwnedRequestContext {
     pub trace_id: uuid::Uuid,
     pub client_address: SocketAddr,
+    pub client_transport: ClientTransport,
     pub acl_ctx: crate::acl::OwnedEvaluationContext,
 }
 
@@ -76,6 +92,7 @@ impl OwnedRequestContext {
     pub fn new(client_address: SocketAddr) -> Self {
         Self {
             client_address,
+            client_transport: ClientTransport::Plaintext,
             trace_id: uuid::Uuid::new_v4(),
             acl_ctx: crate::acl::OwnedEvaluationContext::empty(),
         }
