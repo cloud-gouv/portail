@@ -1,7 +1,7 @@
 use crate::backend_routing;
 use crate::backend_routing::ACLDecision;
 use crate::backend_routing::BackendOutcome;
-use crate::config::KnownBackend;
+use crate::config::{BackendSettings, KnownBackend};
 use crate::dns::happy_eyeballs_connect;
 use crate::proxy::protocols::{ALPN_H2, ALPN_HTTP1_1};
 use crate::proxy::{
@@ -300,83 +300,18 @@ async fn handle_http_request(
         "Request allowed by ACL",
     );
 
-    let mut stream: Option<OutboundStream> = None;
-    let start = Instant::now();
-
-    let backend_result = backend_routing::try_backends(
+    let mut stream = match connect_to_http_backends(
+        &rt,
         &mut backends,
         &final_address,
-        rt.settings.connect_timeout,
-        |backend, target| {
-            let state = rt.state.clone();
-            async move {
-                match connect_to_http_proxy_backend(
-                    &backend,
-                    &target,
-                    state,
-                    inbound_protocol,
-                )
-                .await
-                {
-                    Ok(upstream) => {
-                        info!(
-                            subsystem = "proxy_access",
-                            address = %target,
-                            backend = ?backend,
-                            duration_ms = start.elapsed().as_millis(),
-                            "Stream established to upstream backend"
-                        );
-
-                        BackendOutcome::Success(upstream)
-                    }
-                    Err(UpstreamConnectError::UpstreamResponse(resp)) => {
-                        // Send back the client errors.
-                        if resp.status().is_client_error() {
-                            info!(
-                                subsystem = "proxy_access",
-                                backend = ?backend,
-                                duration_ms = start.elapsed().as_millis(),
-                                status = %resp.status(),
-                                "Backend returned a non-200 client error for HTTP CONNECT, returning it to the client and terminating the request"
-                            );
-
-                            BackendOutcome::Fatal(resp.map(|b| b.boxed()))
-                        } else {
-                            info!(
-                                subsystem = "proxy_access",
-                                backend = ?backend,
-                                duration_ms = start.elapsed().as_millis(),
-                                status = %resp.status(),
-                                "Backend returned a non-200 response for HTTP CONNECT, trying next as it's not a client error"
-                            );
-
-                            BackendOutcome::Retry
-                        }
-                    }
-                    Err(UpstreamConnectError::IO(err)) => {
-                        info!(
-                            subsystem = "proxy_access",
-                            backend = ?backend,
-                            duration_ms = start.elapsed().as_millis(),
-                            "Backend failed for HTTP CONNECT: {}, trying next",
-                            err
-                        );
-
-                        BackendOutcome::Retry
-                    }
-                }
-            }
-        }).await;
-
-    match backend_result {
-        Some(Ok((upstream, _backend))) => {
-            stream = Some(upstream);
-        }
-        Some(Err(resp)) => {
-            return Ok(resp);
-        }
-        None => {}
-    }
+        inbound_protocol,
+    )
+    .await
+    {
+        Some(Ok(upstream)) => Some(upstream),
+        Some(Err(resp)) => return Ok(resp),
+        None => None,
+    };
 
     if stream.is_none() {
         // At this point, we need to re-assess if the request can go through.
@@ -492,6 +427,86 @@ async fn handle_http_request(
     *resp.status_mut() = StatusCode::OK;
 
     Ok(resp)
+}
+
+async fn connect_to_http_backends(
+    rt: &Arc<ProxyRuntime>,
+    backends: &mut Vec<BackendSettings>,
+    final_address: &str,
+    inbound_protocol: InboundHttpProtocol,
+) -> Option<Result<OutboundStream, Response<BoxBody<Bytes, hyper::Error>>>> {
+    let start = Instant::now();
+
+    let backend_result = backend_routing::try_backends(
+        backends,
+        final_address,
+        rt.settings.connect_timeout,
+        |backend, target| {
+            let state = rt.state.clone();
+            async move {
+                match connect_to_http_proxy_backend(
+                    &backend,
+                    &target,
+                    state,
+                    inbound_protocol,
+                )
+                .await
+                {
+                    Ok(upstream) => {
+                        info!(
+                            subsystem = "proxy_access",
+                            address = %target,
+                            backend = ?backend,
+                            duration_ms = start.elapsed().as_millis(),
+                            "Stream established to upstream backend"
+                        );
+
+                        BackendOutcome::Success(upstream)
+                    }
+                    Err(UpstreamConnectError::UpstreamResponse(resp)) => {
+                        // Send back the client errors.
+                        if resp.status().is_client_error() {
+                            info!(
+                                subsystem = "proxy_access",
+                                backend = ?backend,
+                                duration_ms = start.elapsed().as_millis(),
+                                status = %resp.status(),
+                                "Backend returned a non-200 client error for HTTP CONNECT, returning it to the client and terminating the request"
+                            );
+
+                            BackendOutcome::Fatal(resp.map(|b| b.boxed()))
+                        } else {
+                            info!(
+                                subsystem = "proxy_access",
+                                backend = ?backend,
+                                duration_ms = start.elapsed().as_millis(),
+                                status = %resp.status(),
+                                "Backend returned a non-200 response for HTTP CONNECT, trying next as it's not a client error"
+                            );
+
+                            BackendOutcome::Retry
+                        }
+                    }
+                    Err(UpstreamConnectError::IO(err)) => {
+                        info!(
+                            subsystem = "proxy_access",
+                            backend = ?backend,
+                            duration_ms = start.elapsed().as_millis(),
+                            "Backend failed for HTTP CONNECT: {}, trying next",
+                            err
+                        );
+
+                        BackendOutcome::Retry
+                    }
+                }
+            }
+        }).await;
+
+    match backend_result {
+        Some(Ok((upstream, _backend))) => Some(Ok(upstream)),
+        Some(Err(resp)) => Some(Err(resp)),
+        None => None,
+    }
 }
 
 fn empty_body() -> BoxBody<Bytes, hyper::Error> {
