@@ -10,5 +10,35 @@
   "dependencyDashboard": true,
   "nix": {
     "enabled": true
-  }
+  },
+  "minimumReleaseAge": "3 days",
+  "vulnerabilityAlerts": {
+    "minimumReleaseAge": null
+  },
+  "separateMajorMinor": false,
+  "prConcurrentLimit": 4,
+  "prHourlyLimit": 0,
+  "rebaseWhen": "conflicted",
+  "packageRules": [
+    {
+      "matchManagers": [
+        "cargo"
+      ],
+      "groupName": "Rust dependencies"
+    },
+    {
+      "matchManagers": [
+        "github-actions",
+        "nix"
+      ],
+      "groupName": "CI and Nix inputs"
+    },
+    {
+      "matchManagers": [
+        "dockerfile",
+        "docker-compose"
+      ],
+      "groupName": "Container images"
+    }
+  ]
 }
