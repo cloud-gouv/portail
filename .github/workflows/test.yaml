@@ -12,7 +12,7 @@ jobs:
       run: |
         {
           echo 'stdout<<EOF'
-          nix-shell ./. -A shells.ci --run eval-checks -I nixpkgs=channel:nixos-unstable
+          nix-shell ./. -A shells.ci --run eval-checks
           echo 'EOF'
         } >> "$GITHUB_OUTPUT"
   build:
