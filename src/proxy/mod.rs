@@ -102,7 +102,7 @@ async fn serve_authenticated_proxy(
                 } else if alpn.contains(&HttpVersion::Http1_1) {
                     serve_http1_connect(rt, ctx, stream).await?
                 } else {
-                    unreachable!();
+                    bail!("Unsupported ALPN negotiation: {alpn:?}");
                 }
             }
             DetectedProtocol::Ssh | DetectedProtocol::PlaintextHttp(_) => {
@@ -138,7 +138,7 @@ async fn serve_unauthenticated_proxy(
                 } else if alpn.contains(&HttpVersion::Http1_1) {
                     serve_http1_connect(rt, ctx, stream).await?
                 } else {
-                    unreachable!();
+                    bail!("Unsupported ALPN negotiation: {alpn:?}");
                 }
             }
             DetectedProtocol::Ssh | DetectedProtocol::PlaintextHttp(_) => {
