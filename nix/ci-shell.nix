@@ -7,7 +7,7 @@ pkgs.mkShell {
 
   shellHook = ''
     eval-checks() {
-      nix-eval-jobs ./nix/release.nix --check-cache-status | jq -s 'map({attr, isCached})'
+      nix-eval-jobs --expr "(import ./. { }).release" --check-cache-status | jq -s 'map({attr, isCached})'
     }
   '';
 }
