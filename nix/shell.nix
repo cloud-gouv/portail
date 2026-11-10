@@ -7,6 +7,7 @@ pkgs.mkShell {
     rustfmt
     clippy
     cargo-update
+    mdbook
     xtr
   ];
 }
