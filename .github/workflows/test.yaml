@@ -25,7 +25,7 @@ jobs:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
     - uses: samueldr/lix-gha-installer-action@7b7f14d320d6aacfb65bd1ef761566b3b69e474c # main
     - name: Build ${{ matrix.derivation.attr }}
-      run: nix-build ./nix/release.nix -A ${{ matrix.derivation.attr }}
+      run: nix-build -A release.${{ matrix.derivation.attr }}
       if: ${{ ! matrix.derivation.isCached }}
   build-status:
     needs: [ build ]

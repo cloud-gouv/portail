@@ -1,4 +1,4 @@
 { pkgs ? import <nixpkgs> {
-  overlays = [ (import ./nix/overlay.nix) ];
+    overlays = [ (import ./nix/overlay.nix) ];
 } }:
 (import ./. { inherit pkgs; }).shells.development

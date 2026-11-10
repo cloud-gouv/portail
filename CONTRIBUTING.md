@@ -61,14 +61,14 @@ cargo clippy --locked --all-features -- -D warnings
 ### NixOS integration tests
 
 ```sh
-nix-build ./nix/release.nix -A checks.integration
+nix-build -A release.checks.integration
 ```
 
 Individual tests can be run with:
 
 ```sh
-nix-build ./nix/release.nix -A checks.integration.exit-node
-nix-build ./nix/release.nix -A checks.integration.portail-upstream
+nix-build -A release.checks.integration.exit-node
+nix-build -A release.checks.integration.portail-upstream
 # etc.
 ```
 
@@ -84,7 +84,7 @@ mdbook serve book-fr --open   # Live preview at localhost:3000
 Or via Nix:
 
 ```sh
-nix-build ./nix/release.nix -A packages.portail.docs.all
+nix-build -A release.packages.portail.docs.all
 ```
 
 ## Pull request process
