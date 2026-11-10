@@ -13,7 +13,7 @@ environment.
 ### Building
 
 ```sh
-$ nix-shell -p cargo rustc
+$ nix-shell
 $ cargo build
 $ cargo build --release
 ```
@@ -36,7 +36,7 @@ $ cargo bench
 ### Linting
 
 ```sh
-$ nix-shell -p rustfmt clippy
+$ nix-shell
 $ cargo fmt --all --check
 $ cargo clippy --locked --all-features -- -D warnings
 ```
@@ -57,7 +57,7 @@ $ nix-build ./nix/release.nix -A checks.integration.portail-upstream
 ### Building the documentation
 
 ```sh
-$ nix-shell -p mdbook
+$ nix-shell
 $ cd docs
 $ mdbook build book-fr --dest-dir book/fr
 $ mdbook build book-en --dest-dir book/en
