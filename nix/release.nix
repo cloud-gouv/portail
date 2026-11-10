@@ -10,6 +10,6 @@ in
 
     checks = pkgs.lib.recurseIntoAttrs {
       integration = pkgs.lib.recurseIntoAttrs entrypoint.tests;
-      devShell = entrypoint.shell;
+      devShell = entrypoint.shells.development;
     };
   }
