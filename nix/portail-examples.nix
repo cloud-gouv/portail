@@ -1,6 +1,8 @@
 {
   lib,
   rustPlatform,
+  aws-lc,
+  pkg-config,
 }:
 
 rustPlatform.buildRustPackage {
@@ -18,6 +20,14 @@ rustPlatform.buildRustPackage {
   cargoBuildFlags = [
     "--example"
     "h2_proxy_multiplex"
+  ];
+
+  nativeBuildInputs = [
+    pkg-config
+  ];
+
+  buildInputs = [
+    aws-lc
   ];
 
   doCheck = false;

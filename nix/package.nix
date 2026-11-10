@@ -2,6 +2,8 @@
   lib,
   rustPlatform,
   stdenv,
+  aws-lc,
+  pkg-config,
   mdbook,
   versionSuffix ? ""
 }:
@@ -16,6 +18,14 @@ let
       filter = path: type: type == "directory" -> !lib.hasPrefix path (toString ../target);
       src = lib.sources.cleanSource ../.;
     };
+
+    nativeBuildInputs = [
+      pkg-config
+    ];
+
+    buildInputs = [
+      aws-lc
+    ];
 
     cargoLock = {
       lockFile = ../Cargo.lock;
