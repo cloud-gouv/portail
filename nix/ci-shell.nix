@@ -1,5 +1,5 @@
 # Copied from nikstur/bombon (MIT).
-{ pkgs ? import <nixpkgs> { } }:
+{ pkgs }:
 pkgs.mkShell {
   packages = [
     pkgs.lixPackageSets.latest.nix-eval-jobs
