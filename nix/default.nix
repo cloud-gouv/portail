@@ -1,6 +1,4 @@
-{ pkgs ? import <nixpkgs> {
-  overlays = [ (import ./overlay.nix) ];
-} }: {
+{ pkgs }: {
   inherit pkgs;
   package = pkgs.portail;
   shell = import ./shell.nix { inherit pkgs; };
