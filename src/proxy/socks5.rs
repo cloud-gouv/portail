@@ -23,7 +23,8 @@ use crate::{
     dns::{DnsError, HappyEyeballsError, happy_eyeballs_connect},
     proxy::{
         ProxyRuntime,
-        context::{OwnedRequestContext, TargetContext, normalize_host_for_acl},
+        context::{OwnedRequestContext, TargetContext},
+        target::TargetAuthority,
     },
 };
 
@@ -180,17 +181,25 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
         initial_target: target_addr.clone().into(),
     };
 
-    let (host, port) = target_context.initial_target.clone().into_string_and_port();
+    let target = match &target_context.initial_target {
+        crate::proxy::context::TargetAddr::Domain(host, port) => {
+            TargetAuthority::from_host_port(host, *port)
+        }
+        crate::proxy::context::TargetAddr::IP(address) => {
+            TargetAuthority::from_socket_addr(*address)
+        }
+    };
 
-    let normalized_host = if let Ok(host) = normalize_host_for_acl(&host) {
-        host
-    } else {
-        error!(
-            subsystem = "proxy_errors",
-            "Hostname cannot be normalized to ASCII, terminating connection"
-        );
-        proto.reply_error(&ReplyError::ConnectionNotAllowed).await?;
-        return Err(ReplyError::ConnectionNotAllowed.into());
+    let target = match target {
+        Ok(target) => target,
+        Err(error) => {
+            error!(
+                subsystem = "proxy_errors",
+                "Hostname cannot be normalized to ASCII, terminating connection: {error}"
+            );
+            proto.reply_error(&ReplyError::ConnectionNotAllowed).await?;
+            return Err(ReplyError::ConnectionNotAllowed.into());
+        }
     };
 
     let mut ctx = ctx.as_local();
@@ -199,12 +208,24 @@ pub async fn serve_socks5<S: AsyncRead + Unpin + AsyncWrite>(
         crate::acl::ast::ConcreteOperand::String("socks5"),
     );
     ctx.acl_ctx.insert(
+        "tunnel.protocol",
+        crate::acl::ast::ConcreteOperand::String("socks5"),
+    );
+    ctx.acl_ctx.insert(
         "host",
-        crate::acl::ast::ConcreteOperand::String(&normalized_host),
+        crate::acl::ast::ConcreteOperand::String(target.host.as_str()),
+    );
+    ctx.acl_ctx.insert(
+        "tunnel.host",
+        crate::acl::ast::ConcreteOperand::String(target.host.as_str()),
     );
     ctx.acl_ctx.insert(
         "port",
-        crate::acl::ast::ConcreteOperand::Number(port.into()),
+        crate::acl::ast::ConcreteOperand::Number(target.port.into()),
+    );
+    ctx.acl_ctx.insert(
+        "tunnel.port",
+        crate::acl::ast::ConcreteOperand::Number(target.port.into()),
     );
 
     let mut final_addr = target_addr;

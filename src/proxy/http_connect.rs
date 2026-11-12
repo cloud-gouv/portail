@@ -3,8 +3,8 @@ use crate::backend_routing::ACLDecision;
 use crate::backend_routing::BackendOutcome;
 use crate::config::KnownBackend;
 use crate::dns::happy_eyeballs_connect;
-use crate::proxy::context::{OwnedRequestContext, normalize_host_for_acl};
 use crate::proxy::protocols::{ALPN_H2, ALPN_HTTP1_1};
+use crate::proxy::{context::OwnedRequestContext, target::TargetAuthority};
 use crate::{
     proxy::{ProxyError, ProxyRuntime, client_tls},
     state::State,
@@ -169,6 +169,10 @@ async fn handle_http_request(
         "proxy.protocol",
         crate::acl::ast::ConcreteOperand::String("http"),
     );
+    ctx.acl_ctx.insert(
+        "tunnel.protocol",
+        crate::acl::ast::ConcreteOperand::String("http"),
+    );
 
     let Some(target_authority) = req.uri().authority() else {
         debug!(
@@ -199,32 +203,41 @@ async fn handle_http_request(
     // We decided the default port for CONNECT is 443.
     const CONNECT_DEFAULT_PORT: u16 = 443;
 
-    let port = target_authority.port_u16().unwrap_or(CONNECT_DEFAULT_PORT);
-    let mut final_address = format!("{}:{}", target_authority.host(), port);
+    let target = match TargetAuthority::parse(target_authority, CONNECT_DEFAULT_PORT) {
+        Ok(target) => target,
+        Err(error) => {
+            error!(
+                subsystem = "proxy_errors",
+                "Authority cannot be normalized to ASCII, terminating connection: {error}"
+            );
+
+            let mut resp = Response::new(empty_body());
+            *resp.status_mut() = StatusCode::BAD_REQUEST;
+            return Ok(resp);
+        }
+    };
+
+    let port = target.port;
+    let mut final_address = target.to_string();
 
     debug!(subsystem = "proxy_access", final_address = %final_address,
         "HTTP CONNECT request");
 
-    let normalized_host = if let Ok(host) = normalize_host_for_acl(target_authority.host()) {
-        host
-    } else {
-        error!(
-            subsystem = "proxy_errors",
-            "Authority cannot be normalized to ASCII, terminating connection"
-        );
-
-        let mut resp = Response::new(empty_body());
-        *resp.status_mut() = StatusCode::BAD_REQUEST;
-        return Ok(resp);
-    };
-
     ctx.acl_ctx.insert(
         "host",
-        crate::acl::ast::ConcreteOperand::String(&normalized_host),
+        crate::acl::ast::ConcreteOperand::String(target.host.as_str()),
+    );
+    ctx.acl_ctx.insert(
+        "tunnel.host",
+        crate::acl::ast::ConcreteOperand::String(target.host.as_str()),
     );
 
     ctx.acl_ctx.insert(
         "port",
+        crate::acl::ast::ConcreteOperand::Number(port.into()),
+    );
+    ctx.acl_ctx.insert(
+        "tunnel.port",
         crate::acl::ast::ConcreteOperand::Number(port.into()),
     );
     ctx.acl_ctx.insert(

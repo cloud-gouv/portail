@@ -32,10 +32,12 @@ use crate::{
 
 mod client_tls;
 pub mod context;
+pub mod host;
 mod http_connect;
 pub mod identity;
 mod protocols;
 mod socks5;
+pub mod target;
 
 use context::InboundStream;
 use http_connect::{serve_http1_connect, serve_http2_connect};
@@ -308,6 +310,13 @@ pub async fn accept_client(
                                     "Authenticated TLS stream (client certificates)"
                                 );
 
+                                ctx.client_transport = crate::proxy::context::ClientTransport::Tls;
+                                ctx.acl_ctx.insert(
+                                    "tunnel.transport".into(),
+                                    OwnedConcreteOperand::String(
+                                        ctx.client_transport.as_str().into(),
+                                    ),
+                                );
                                 ctx.acl_ctx.insert(
                                     "client.auth".into(),
                                     OwnedConcreteOperand::String("tls".into()),
@@ -356,6 +365,15 @@ pub async fn accept_client(
                         "No TLS detected, serving unauthenticated and plaintext requests",
                     );
 
+                    ctx.client_transport = crate::proxy::context::ClientTransport::Plaintext;
+                    ctx.acl_ctx.insert(
+                        "tunnel.transport".into(),
+                        OwnedConcreteOperand::String(ctx.client_transport.as_str().into()),
+                    );
+                    ctx.acl_ctx.insert(
+                        "tunnel.client.auth".into(),
+                        OwnedConcreteOperand::String("none".into()),
+                    );
                     ctx.acl_ctx.insert(
                         "client.auth".into(),
                         OwnedConcreteOperand::String("none".into()),
