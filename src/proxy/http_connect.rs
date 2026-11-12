@@ -1,10 +1,14 @@
 use crate::backend_routing;
 use crate::backend_routing::ACLDecision;
 use crate::backend_routing::BackendOutcome;
-use crate::config::KnownBackend;
+use crate::config::{BackendSettings, KnownBackend};
 use crate::dns::happy_eyeballs_connect;
 use crate::proxy::protocols::{ALPN_H2, ALPN_HTTP1_1};
-use crate::proxy::{context::OwnedRequestContext, target::TargetAuthority};
+use crate::proxy::{
+    context::OwnedRequestContext,
+    target::TargetAuthority,
+    tunnel::{TunnelContext, TunnelProtocol, serve_passthrough},
+};
 use crate::{
     proxy::{ProxyError, ProxyRuntime, client_tls},
     state::State,
@@ -39,6 +43,45 @@ type OutboundStream = Box<dyn OutboundStreamIo + Send + Unpin>;
 enum InboundHttpProtocol {
     Http1,
     Http2,
+}
+
+const CONNECT_DEFAULT_PORT: u16 = 443;
+
+#[derive(Debug, thiserror::Error)]
+enum ConnectTargetError {
+    #[error("The CONNECT URI has no authority")]
+    MissingAuthority,
+    #[error("The CONNECT URI uses absolute form")]
+    AbsoluteForm,
+    #[error(transparent)]
+    InvalidAuthority(#[from] crate::proxy::target::TargetAuthorityError),
+}
+
+/// The CONNECT target, both as the client wrote it and in canonical form.
+///
+/// The two differ on purpose: ACL evaluation and dialing use the canonical host, while logs and
+/// the HTTP/2 `:authority` echo must show what the client asked for.
+struct ConnectTarget {
+    authority: Authority,
+    target: TargetAuthority,
+}
+
+fn parse_connect_target(uri: &http::Uri) -> Result<ConnectTarget, ConnectTargetError> {
+    if uri.scheme().is_some() {
+        return Err(ConnectTargetError::AbsoluteForm);
+    }
+
+    let Some(authority) = uri.authority() else {
+        return Err(ConnectTargetError::MissingAuthority);
+    };
+
+    let target = TargetAuthority::parse(authority, CONNECT_DEFAULT_PORT)
+        .map_err(ConnectTargetError::from)?;
+
+    Ok(ConnectTarget {
+        authority: authority.clone(),
+        target,
+    })
 }
 
 enum Decision {
@@ -174,41 +217,15 @@ async fn handle_http_request(
         crate::acl::ast::ConcreteOperand::String("http"),
     );
 
-    let Some(target_authority) = req.uri().authority() else {
-        debug!(
-            subsystem = "proxy_errors",
-            "Invalid authority in CONNECT URI, terminating connection"
-        );
-        let mut resp = Response::new(empty_body());
-        *resp.status_mut() = StatusCode::BAD_REQUEST;
-        return Ok(resp);
-    };
-
-    // Reject non-authority-form CONNECT targets.
-    // Absolute form (https://host:port/path) lets the client control the scheme, path and query
-    // that ACL sees. But those are not accurate. They do not constrain the actual tunnel.
-    // Per RFC 7231, §4.3.6, CONNECT targets MUST use authority-form.
-
-    if req.uri().scheme().is_some() {
-        error!(
-            subsystem = "proxy_errors",
-            uri = %req.uri(),
-            "Rejected absolute-form CONNECT target"
-        );
-        let mut resp = Response::new(empty_body());
-        *resp.status_mut() = StatusCode::BAD_REQUEST;
-        return Ok(resp);
-    }
-
-    // We decided the default port for CONNECT is 443.
-    const CONNECT_DEFAULT_PORT: u16 = 443;
-
-    let target = match TargetAuthority::parse(target_authority, CONNECT_DEFAULT_PORT) {
+    // CONNECT targets must use authority form. Absolute form lets the client control the
+    // scheme, path, and query that the ACL sees.
+    let ConnectTarget { authority, target } = match parse_connect_target(req.uri()) {
         Ok(target) => target,
         Err(error) => {
             error!(
                 subsystem = "proxy_errors",
-                "Authority cannot be normalized to ASCII, terminating connection: {error}"
+                uri = %req.uri(),
+                "Rejected CONNECT target: {error}"
             );
 
             let mut resp = Response::new(empty_body());
@@ -270,7 +287,7 @@ async fn handle_http_request(
     match map_acl_decision(
         backend_routing::assess_request(&ctx, &acl),
         start,
-        target_authority,
+        &authority,
     )? {
         Decision::TerminateWithResponse(resp) => return Ok(resp),
         Decision::RedirectDestination(target) => final_address = target,
@@ -283,83 +300,18 @@ async fn handle_http_request(
         "Request allowed by ACL",
     );
 
-    let mut stream: Option<OutboundStream> = None;
-    let start = Instant::now();
-
-    let backend_result = backend_routing::try_backends(
+    let mut stream = match connect_to_http_backends(
+        &rt,
         &mut backends,
         &final_address,
-        rt.settings.connect_timeout,
-        |backend, target| {
-            let state = rt.state.clone();
-            async move {
-                match connect_to_http_proxy_backend(
-                    &backend,
-                    &target,
-                    state,
-                    inbound_protocol,
-                )
-                .await
-                {
-                    Ok(upstream) => {
-                        info!(
-                            subsystem = "proxy_access",
-                            address = %target,
-                            backend = ?backend,
-                            duration_ms = start.elapsed().as_millis(),
-                            "Stream established to upstream backend"
-                        );
-
-                        BackendOutcome::Success(upstream)
-                    }
-                    Err(UpstreamConnectError::UpstreamResponse(resp)) => {
-                        // Send back the client errors.
-                        if resp.status().is_client_error() {
-                            info!(
-                                subsystem = "proxy_access",
-                                backend = ?backend,
-                                duration_ms = start.elapsed().as_millis(),
-                                status = %resp.status(),
-                                "Backend returned a non-200 client error for HTTP CONNECT, returning it to the client and terminating the request"
-                            );
-
-                            BackendOutcome::Fatal(resp.map(|b| b.boxed()))
-                        } else {
-                            info!(
-                                subsystem = "proxy_access",
-                                backend = ?backend,
-                                duration_ms = start.elapsed().as_millis(),
-                                status = %resp.status(),
-                                "Backend returned a non-200 response for HTTP CONNECT, trying next as it's not a client error"
-                            );
-
-                            BackendOutcome::Retry
-                        }
-                    }
-                    Err(UpstreamConnectError::IO(err)) => {
-                        info!(
-                            subsystem = "proxy_access",
-                            backend = ?backend,
-                            duration_ms = start.elapsed().as_millis(),
-                            "Backend failed for HTTP CONNECT: {}, trying next",
-                            err
-                        );
-
-                        BackendOutcome::Retry
-                    }
-                }
-            }
-        }).await;
-
-    match backend_result {
-        Some(Ok((upstream, _backend))) => {
-            stream = Some(upstream);
-        }
-        Some(Err(resp)) => {
-            return Ok(resp);
-        }
-        None => {}
-    }
+        inbound_protocol,
+    )
+    .await
+    {
+        Some(Ok(upstream)) => Some(upstream),
+        Some(Err(resp)) => return Ok(resp),
+        None => None,
+    };
 
     if stream.is_none() {
         // At this point, we need to re-assess if the request can go through.
@@ -368,7 +320,7 @@ async fn handle_http_request(
         match map_acl_decision(
             backend_routing::assess_request(&ctx, &acl),
             start,
-            target_authority,
+            &authority,
         )? {
             Decision::TerminateWithResponse(resp) => return Ok(resp),
             Decision::RedirectDestination(target) => final_address = target,
@@ -433,7 +385,7 @@ async fn handle_http_request(
         }
     }
 
-    let Some(mut stream) = stream else {
+    let Some(stream) = stream else {
         warn!(
             subsystem = "proxy_errors",
             address = %final_address,
@@ -445,35 +397,15 @@ async fn handle_http_request(
         return Ok(resp);
     };
 
-    tokio::task::spawn(
-        async move {
-            let start = Instant::now();
-            match hyper::upgrade::on(req).await {
-                Ok(upgraded) => {
-                    let mut client = TokioIo::new(upgraded);
-                    match tokio::io::copy_bidirectional(&mut client, &mut *stream).await {
-                        Err(e) => error!(
-                            subsystem = "proxy_errors",
-                            duration_ms = start.elapsed().as_millis(),
-                            "CONNECT tunnel error: {}",
-                            e
-                        ),
-                        Ok((n_bytes_sent, n_bytes_recv)) => {
-                            info!(
-                                subsystem = "proxy_access",
-                                n_bytes_sent = %n_bytes_sent,
-                                n_bytes_recv = %n_bytes_recv,
-                                duration_ms = start.elapsed().as_millis(),
-                                "CONNECT tunnel finished successfully"
-                            );
-                        }
-                    }
-                }
-                Err(e) => error!(subsystem = "proxy_errors", "CONNECT upgrade error: {}", e),
-            }
-        }
-        .in_current_span(),
+    let tunnel_ctx = TunnelContext::new(
+        initial_ctx.trace_id,
+        initial_ctx.client_address,
+        target.clone(),
+        initial_ctx.client_transport,
+        TunnelProtocol::Http,
     );
+
+    spawn_tunnel(req, tunnel_ctx, stream);
 
     // Connection: keep-alive is
     // - the default for HTTP/1.1
@@ -482,6 +414,103 @@ async fn handle_http_request(
     *resp.status_mut() = StatusCode::OK;
 
     Ok(resp)
+}
+
+async fn connect_to_http_backends(
+    rt: &Arc<ProxyRuntime>,
+    backends: &mut Vec<BackendSettings>,
+    final_address: &str,
+    inbound_protocol: InboundHttpProtocol,
+) -> Option<Result<OutboundStream, Response<BoxBody<Bytes, hyper::Error>>>> {
+    let start = Instant::now();
+
+    let backend_result = backend_routing::try_backends(
+        backends,
+        final_address,
+        rt.settings.connect_timeout,
+        |backend, target| {
+            let state = rt.state.clone();
+            async move {
+                match connect_to_http_proxy_backend(
+                    &backend,
+                    &target,
+                    state,
+                    inbound_protocol,
+                )
+                .await
+                {
+                    Ok(upstream) => {
+                        info!(
+                            subsystem = "proxy_access",
+                            address = %target,
+                            backend = ?backend,
+                            duration_ms = start.elapsed().as_millis(),
+                            "Stream established to upstream backend"
+                        );
+
+                        BackendOutcome::Success(upstream)
+                    }
+                    Err(UpstreamConnectError::UpstreamResponse(resp)) => {
+                        // Send back the client errors.
+                        if resp.status().is_client_error() {
+                            info!(
+                                subsystem = "proxy_access",
+                                backend = ?backend,
+                                duration_ms = start.elapsed().as_millis(),
+                                status = %resp.status(),
+                                "Backend returned a non-200 client error for HTTP CONNECT, returning it to the client and terminating the request"
+                            );
+
+                            BackendOutcome::Fatal(resp.map(|b| b.boxed()))
+                        } else {
+                            info!(
+                                subsystem = "proxy_access",
+                                backend = ?backend,
+                                duration_ms = start.elapsed().as_millis(),
+                                status = %resp.status(),
+                                "Backend returned a non-200 response for HTTP CONNECT, trying next as it's not a client error"
+                            );
+
+                            BackendOutcome::Retry
+                        }
+                    }
+                    Err(UpstreamConnectError::IO(err)) => {
+                        info!(
+                            subsystem = "proxy_access",
+                            backend = ?backend,
+                            duration_ms = start.elapsed().as_millis(),
+                            "Backend failed for HTTP CONNECT: {}, trying next",
+                            err
+                        );
+
+                        BackendOutcome::Retry
+                    }
+                }
+            }
+        }).await;
+
+    match backend_result {
+        Some(Ok((upstream, _backend))) => Some(Ok(upstream)),
+        Some(Err(resp)) => Some(Err(resp)),
+        None => None,
+    }
+}
+
+fn spawn_tunnel(req: Request<Incoming>, tunnel_ctx: TunnelContext, stream: OutboundStream) {
+    tokio::task::spawn(
+        async move {
+            match hyper::upgrade::on(req).await {
+                Ok(upgraded) => {
+                    let client = TokioIo::new(upgraded);
+                    if let Err(error) = serve_passthrough(&tunnel_ctx, client, stream).await {
+                        error!(subsystem = "proxy_errors", "CONNECT tunnel error: {error}");
+                    }
+                }
+                Err(e) => error!(subsystem = "proxy_errors", "CONNECT upgrade error: {}", e),
+            }
+        }
+        .in_current_span(),
+    );
 }
 
 fn empty_body() -> BoxBody<Bytes, hyper::Error> {
@@ -615,5 +644,46 @@ async fn connect_to_http_proxy_backend(
             .map_err(io::Error::other)?;
 
         Ok(Box::new(TokioIo::new(upgraded)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn uri(value: &str) -> http::Uri {
+        value.parse().unwrap()
+    }
+
+    #[test]
+    fn parses_authority_form_with_default_port() {
+        let ConnectTarget { target, .. } = parse_connect_target(&uri("example.com")).unwrap();
+        assert_eq!(target.host.as_str(), "example.com");
+        assert_eq!(target.port, CONNECT_DEFAULT_PORT);
+        assert!(!target.explicit_port);
+    }
+
+    #[test]
+    fn parses_authority_form_with_explicit_port() {
+        let ConnectTarget { target, .. } = parse_connect_target(&uri("example.com:8443")).unwrap();
+        assert_eq!(target.host.as_str(), "example.com");
+        assert_eq!(target.port, 8443);
+        assert!(target.explicit_port);
+    }
+
+    #[test]
+    fn rejects_absolute_form() {
+        assert!(matches!(
+            parse_connect_target(&uri("https://example.com:443/")),
+            Err(ConnectTargetError::AbsoluteForm)
+        ));
+    }
+
+    #[test]
+    fn rejects_missing_authority() {
+        assert!(matches!(
+            parse_connect_target(&uri("/")),
+            Err(ConnectTargetError::MissingAuthority)
+        ));
     }
 }

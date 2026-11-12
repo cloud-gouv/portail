@@ -20,15 +20,6 @@ pub enum TargetAddr {
     IP(SocketAddr),
 }
 
-impl TargetAddr {
-    pub fn into_string_and_port(self) -> (String, u16) {
-        match self {
-            Self::Domain(domain, port) => (domain, port),
-            Self::IP(ip) => (ip.ip().to_string(), ip.port()),
-        }
-    }
-}
-
 impl Display for TargetAddr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
