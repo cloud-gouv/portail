@@ -134,6 +134,15 @@ Omit the entire section for plain-text outbound connections.
 | `tls-privkey` | `path` | none | Client private key for mTLS |
 | `tls-certificate` | `path` | none | Client certificate presented to backends |
 
+Portail never uses the listener CA to trust outbound TLS.
+
+### Outer tunnel context
+
+ACL rules can use `tunnel.*` variables for outer tunnel facts: protocol,
+transport, canonical host, port, and client authentication. mTLS clients also
+expose `tunnel.client.cert.*` for certificate identity. See the ACL syntax
+cheatsheet for the full list.
+
 ### `[dns]` (Domain name resolution)
 
 DNS settings when Portail perform domain name resolution autonomously.

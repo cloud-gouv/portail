@@ -52,6 +52,14 @@ impl TunnelContext {
     }
 }
 
+#[tracing::instrument(skip_all, fields(
+    trace_id = %ctx.trace_id,
+    client_address = %ctx.client_address,
+    tunnel_protocol = ctx.protocol.as_str(),
+    tunnel_transport = ctx.transport.as_str(),
+    tunnel_host = ctx.target.host.as_str(),
+    tunnel_port = ctx.target.port,
+))]
 pub(crate) async fn serve_passthrough<C, O>(
     ctx: &TunnelContext,
     client: C,
@@ -67,12 +75,6 @@ where
 
     info!(
         subsystem = "proxy_access",
-        trace_id = %ctx.trace_id,
-        client_address = %ctx.client_address,
-        tunnel_protocol = ctx.protocol.as_str(),
-        tunnel_transport = ctx.transport.as_str(),
-        tunnel_host = ctx.target.host.as_str(),
-        tunnel_port = ctx.target.port,
         n_bytes_sent = %n_bytes_sent,
         n_bytes_recv = %n_bytes_recv,
         "Tunnel finished"

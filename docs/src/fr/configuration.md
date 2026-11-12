@@ -134,6 +134,16 @@ Omettre la section entière pour des connexions sortantes en clair.
 | `tls-privkey` | `path` | aucun | Clé privée du client pour mTLS |
 | `tls-certificate` | `path` | aucun | Certificat client présenté aux backends |
 
+Portail n'utilise jamais la CA du listener pour faire confiance au TLS sortant.
+
+### Contexte du tunnel externe
+
+Les règles ACL peuvent utiliser les variables `tunnel.*` pour les informations
+du tunnel externe : protocole, transport, hôte canonique, port et
+authentification client. Les clients mTLS exposent aussi
+`tunnel.client.cert.*` pour l'identité du certificat. Voir l'aide-mémoire de
+syntaxe ACL pour la liste complète.
+
 ### `[dns]` (Résolution des noms de domaine)
 
 Paramètres DNS lorsque Portail effectue de la résolution des noms autonome.
