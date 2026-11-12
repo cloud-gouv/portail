@@ -62,3 +62,15 @@ Parentheses `( )` can be used to group expressions.
 | `host` | `string` | Target hostname | Always |
 | `port` | `u16` | Target port (0–65535) | Always |
 | `proxy.cmd` | `string` | SOCKS5 command: `tcp_connect`, `udp_associate` | SOCKS5 |
+| `tunnel.protocol` | `string` | Outer tunnel protocol: `socks5`, `http` | Always |
+| `tunnel.transport` | `string` | Outer transport: `tls`, `plaintext` | Always |
+| `tunnel.host` | `string` | Canonical outer target host | Always |
+| `tunnel.port` | `u16` | Outer target port | Always |
+| `tunnel.client.auth` | `string` | Client authentication: `none`, `mtls` | Always |
+| `tunnel.client.cert.subject_cn` | `string` | Client certificate subject CN | mTLS |
+| `tunnel.client.cert.issuer_cn` | `string` | Client certificate issuer CN | mTLS |
+| `tunnel.client.cert.serial` | `string` | Client certificate serial | mTLS |
+| `tunnel.client.cert.san_dns` | `set` | Client certificate DNS SANs | mTLS |
+| `tunnel.client.cert.san_uri` | `set` | Client certificate URI SANs | mTLS |
+| `tunnel.client.cert.san_email` | `set` | Client certificate email SANs | mTLS |
+| `tunnel.client.cert.san_ip` | `set` | Client certificate IP SANs | mTLS |

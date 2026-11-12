@@ -69,11 +69,20 @@ fn map_acl_decision(
                 "SOCKS5 request redirected due to ACL"
             );
 
+            // A redirect target comes from the ACL and may be a relative URL, which has
+            // no host to redirect a SOCKS5 request to.
+            let Some(host) = target.host().map(str::to_owned) else {
+                error!(
+                    subsystem = "proxy_errors",
+                    redirected_to = %target,
+                    "ACL redirect target has no host, refusing the redirect"
+                );
+
+                return Ok(Decision::TerminateWithError(ReplyError::GeneralFailure));
+            };
+
             Ok(Decision::RedirectDestination(TargetAddr::Domain(
-                target
-                    .host()
-                    .expect("BUG: Redirect target should be an FQDN")
-                    .to_owned(),
+                host,
                 // FIXME: calculation of the default port should be better and take into account
                 // the scheme.
                 target.port_u16().unwrap_or(80),

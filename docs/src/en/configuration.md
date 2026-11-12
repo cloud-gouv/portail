@@ -121,6 +121,7 @@ Omit the entire section for plain-text local connections.
 | `tls-chain` | `path` | none | Server certificate chain presented to connecting clients |
 
 When all three are set, Portail requires and validates client certificates via mTLS.
+The listener CA is used only for inbound client authentication.
 
 ### `[escaper]` (Outbound TLS)
 
@@ -129,7 +130,7 @@ Omit the entire section for plain-text outbound connections.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `cacert-file` | `path` | none | CA certificate used to validate the backend's server certificate |
+| `cacert-file` | `path` | none | CA certificate used to validate the backend's server certificate. It is separate from the listener CA and is required for identity-aware backends. |
 | `tls-privkey` | `path` | none | Client private key for mTLS |
 | `tls-certificate` | `path` | none | Client certificate presented to backends |
 
