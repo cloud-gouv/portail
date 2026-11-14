@@ -3019,6 +3019,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "zcheapstr"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "939f186d9ecebe044315a5cb6d6f78568bbc21152adc954d5a0c2f58bdbc9920"
+
+[[package]]
 name = "zerocopy"
 version = "0.8.59"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3100,20 +3106,21 @@ dependencies = [
 
 [[package]]
 name = "zlink"
-version = "0.7.1"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "706aa8f0ed19681e7e95291fdea930a10485257820999797c2eb3051b22e888b"
+checksum = "0a1ad9b0ce1b2429b410a62073718c912f116e8321dd792174f1c3740b1dfefd"
 dependencies = [
  "zlink-core",
  "zlink-smol",
  "zlink-tokio",
+ "zlink-zruntime",
 ]
 
 [[package]]
 name = "zlink-core"
-version = "0.7.1"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f77dd6d1dc0520a668f5640fef2d51dc39df22a939e7c827019d0a2edafe3cc"
+checksum = "e7255eca2f112bfa0810330552cab275b9ccf6e85de5c621fb6f50ed3785e199"
 dependencies = [
  "futures-util",
  "itoa",
@@ -3126,34 +3133,46 @@ dependencies = [
  "tracing",
  "zlink-idl",
  "zlink-macros",
+ "zlink-names",
 ]
 
 [[package]]
 name = "zlink-idl"
-version = "0.7.1"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92b13734a025195596b4d855ddf1e66a5e74533564a7d1b0a8d072dd00e2c6ef"
+checksum = "47c109a8267b0136e69d3388fb88404f90b454a1bc927e7db0a7c00ef9392c46"
 dependencies = [
- "winnow 0.7.15",
+ "zlink-names",
 ]
 
 [[package]]
 name = "zlink-macros"
-version = "0.7.1"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c09c588f0c465b5f17ac9ee187b34ca2b73b06c4a67c6170b856387dbede4cc7"
+checksum = "e5645ee29f57b5e3fba0c3127cf924f1ede3489b80ad7050642d5b773324af7b"
 dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
- "zlink-idl",
+ "zlink-names",
+]
+
+[[package]]
+name = "zlink-names"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f24e03c07a8aca8c447162c4cb5a0e766f4a3cae979f9fa82d5c2c77ab4f1f4b"
+dependencies = [
+ "serde",
+ "winnow 0.7.15",
+ "zcheapstr",
 ]
 
 [[package]]
 name = "zlink-smol"
-version = "0.7.1"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62c3ee8faa545275ae31816a08455209872da51ef8a3cb46dbe97c9a5f838f34"
+checksum = "835c6426b2d787424a762d5bfacbafd2f41dd9d4e4c4ec97dd9de04f7574a07c"
 dependencies = [
  "async-broadcast",
  "async-channel",
@@ -3166,9 +3185,9 @@ dependencies = [
 
 [[package]]
 name = "zlink-tokio"
-version = "0.7.1"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7fbaa1ec22ae711a158c85220007e8d8c5289591577729679215fce3e960747"
+checksum = "d1ebb6da7d196254b733a4b922a97ce9974bd8a6d3b85a124c4de205824261b1"
 dependencies = [
  "futures-util",
  "pin-project-lite",
@@ -3178,7 +3197,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "zlink-zruntime"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1633767291a4afaac19d08a6c95f706be7bebb7a3e457a06822d1246d7bee186"
+dependencies = [
+ "futures-core",
+ "futures-util",
+ "pin-project-lite",
+ "zlink-core",
+ "zruntime",
+]
+
+[[package]]
 name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
+
+[[package]]
+name = "zruntime"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce6a55d4f521760475a30f7b96779508fe8c40dc834478709454dd1d5f0ebc72"
+dependencies = [
+ "futures-core",
+ "futures-io",
+ "rustix",
+ "socket2 0.6.5",
+ "tracing",
+ "windows-sys 0.61.2",
+]
