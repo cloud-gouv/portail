@@ -47,11 +47,23 @@ enum Decision {
     Continue,
 }
 
+#[derive(Debug, Error)]
+pub enum CustomResponseError {
+    #[error("failed to build response {e}")]
+    ResponseBuildingFailed { e: http::Error },
+}
+
+impl From<http::Error> for CustomResponseError {
+    fn from(err: http::Error) -> CustomResponseError {
+        CustomResponseError::ResponseBuildingFailed { e: err }
+    }
+}
+
 fn map_acl_decision(
     decision: ACLDecision,
     start: Instant,
     target_authority: &Authority,
-) -> Result<Decision, anyhow::Error> {
+) -> Result<Decision, CustomResponseError> {
     match decision {
         ACLDecision::InternalError => {
             empty_response(StatusCode::INTERNAL_SERVER_ERROR).map(Decision::TerminateWithResponse)
@@ -137,7 +149,7 @@ async fn handle_http_request(
     initial_ctx: OwnedRequestContext,
     rt: Arc<ProxyRuntime>,
     inbound_protocol: InboundHttpProtocol,
-) -> Result<Response<BoxBody<Bytes, hyper::Error>>, anyhow::Error> {
+) -> Result<Response<BoxBody<Bytes, hyper::Error>>, CustomResponseError> {
     let mut ctx = initial_ctx.as_local();
     let start = Instant::now();
 
@@ -451,7 +463,7 @@ async fn handle_http_request(
 
 fn empty_response(
     status_code: StatusCode,
-) -> Result<Response<BoxBody<Bytes, hyper::Error>>, anyhow::Error> {
+) -> Result<Response<BoxBody<Bytes, hyper::Error>>, CustomResponseError> {
     let empty_body = Empty::<Bytes>::new()
         .map_err(|never| match never {})
         .boxed();
@@ -459,7 +471,7 @@ fn empty_response(
     Response::builder()
         .status(status_code)
         .body(empty_body)
-        .map_err(|e| anyhow::Error::new(e))
+        .map_err(From::from)
 }
 
 #[derive(Debug, Error)]
