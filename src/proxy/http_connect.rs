@@ -53,22 +53,16 @@ fn map_acl_decision(
     target_authority: &Authority,
 ) -> Result<Decision, anyhow::Error> {
     match decision {
-        ACLDecision::InternalError => Response::builder()
-            .status(StatusCode::INTERNAL_SERVER_ERROR)
-            .body(empty_body())
-            .map(Decision::TerminateWithResponse)
-            .map_err(anyhow::Error::new),
+        ACLDecision::InternalError => {
+            empty_response(StatusCode::INTERNAL_SERVER_ERROR).map(Decision::TerminateWithResponse)
+        }
         ACLDecision::Deny => {
             info!(
                 subsystem = "proxy_access",
                 duration_us = start.elapsed().as_micros(),
                 "Request denied by ACL",
             );
-            Response::builder()
-                .status(StatusCode::FORBIDDEN)
-                .body(empty_body())
-                .map(Decision::TerminateWithResponse)
-                .map_err(anyhow::Error::new)
+            empty_response(StatusCode::FORBIDDEN).map(Decision::TerminateWithResponse)
         }
         ACLDecision::Redirect(target) => {
             info!(
@@ -153,10 +147,7 @@ async fn handle_http_request(
             "Unsupported HTTP method received, terminating connection",
         );
         // TODO: we might want to handle this case in the future
-        return Response::builder()
-            .status(StatusCode::METHOD_NOT_ALLOWED)
-            .body(empty_body())
-            .map_err(|e| anyhow::Error::new(e));
+        return empty_response(StatusCode::METHOD_NOT_ALLOWED);
     }
 
     ctx.acl_ctx.insert(
@@ -177,10 +168,7 @@ async fn handle_http_request(
             subsystem = "proxy_errors",
             "Invalid authority in CONNECT URI, terminating connection"
         );
-        return Response::builder()
-            .status(StatusCode::BAD_REQUEST)
-            .body(empty_body())
-            .map_err(|e| anyhow::Error::new(e));
+        return empty_response(StatusCode::BAD_REQUEST);
     };
 
     // Reject non-authority-form CONNECT targets.
@@ -194,10 +182,7 @@ async fn handle_http_request(
             uri = %req.uri(),
             "Rejected absolute-form CONNECT target"
         );
-        return Response::builder()
-            .status(StatusCode::BAD_REQUEST)
-            .body(empty_body())
-            .map_err(|e| anyhow::Error::new(e));
+        return empty_response(StatusCode::BAD_REQUEST);
     }
 
     // We decided the default port for CONNECT is 443.
@@ -217,10 +202,7 @@ async fn handle_http_request(
             "Authority cannot be normalized to ASCII, terminating connection"
         );
 
-        return Response::builder()
-            .status(StatusCode::BAD_REQUEST)
-            .body(empty_body())
-            .map_err(|e| anyhow::Error::new(e));
+        return empty_response(StatusCode::BAD_REQUEST);
     };
 
     ctx.acl_ctx.insert(
@@ -254,10 +236,7 @@ async fn handle_http_request(
     let (mut backends, acl) = match backend_routing::build_backend_chain(&rt, &mut ctx).await {
         (Some(b), acl) => (b, acl),
         (None, _) => {
-            return Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(empty_body())
-                .map_err(|e| anyhow::Error::new(e));
+            return empty_response(StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
     match map_acl_decision(
@@ -391,10 +370,7 @@ async fn handle_http_request(
                     duration_ms = start.elapsed().as_millis(),
                     "Direct connection target is an invalid authority",
                 );
-                return Response::builder()
-                    .status(StatusCode::BAD_REQUEST)
-                    .body(empty_body())
-                    .map_err(|e| anyhow::Error::new(e));
+                return empty_response(StatusCode::BAD_REQUEST);
             }
         };
 
@@ -434,10 +410,7 @@ async fn handle_http_request(
             "No outbound stream could be established"
         );
 
-        return Response::builder()
-            .status(StatusCode::BAD_GATEWAY)
-            .body(empty_body())
-            .map_err(|e| anyhow::Error::new(e));
+        return empty_response(StatusCode::BAD_GATEWAY);
     };
 
     tokio::task::spawn(
@@ -473,16 +446,20 @@ async fn handle_http_request(
     // Connection: keep-alive is
     // - the default for HTTP/1.1
     // - stripped by hyper for HTTP/2 https://github.com/hyperium/hyper/blob/e13e783927d429fc03038fe512eeb4d379cf1a70/src/proto/h2/mod.rs#L43
-    Response::builder()
-        .status(StatusCode::OK)
-        .body(empty_body())
-        .map_err(|e| anyhow::Error::new(e))
+    empty_response(StatusCode::OK)
 }
 
-fn empty_body() -> BoxBody<Bytes, hyper::Error> {
-    Empty::<Bytes>::new()
+fn empty_response(
+    status_code: StatusCode,
+) -> Result<Response<BoxBody<Bytes, hyper::Error>>, anyhow::Error> {
+    let empty_body = Empty::<Bytes>::new()
         .map_err(|never| match never {})
-        .boxed()
+        .boxed();
+
+    Response::builder()
+        .status(status_code)
+        .body(empty_body)
+        .map_err(|e| anyhow::Error::new(e))
 }
 
 #[derive(Debug, Error)]
